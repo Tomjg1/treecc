@@ -3,6 +3,7 @@
 
 #ifndef ELF_H
 #define ELF_H
+#include <base/base_inc.h>
 
 typedef U8 ELF_Class;
 enum
