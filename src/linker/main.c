@@ -14,7 +14,6 @@ typedef struct LinkObject {
     U64 data_size;
     U64 bss_size;
     U64 buffer_size;
-    U8 buffer[];
 } LinkObject;
 
 //default elf header layout
@@ -38,9 +37,9 @@ read_only ELF_Hdr64 default_header =
     .e_shoff = 0,
     .e_flags = 0,
     .e_ehsize = sizeof(ELF_Hdr64),
-    .e_phentsize = sizeof(ELF_Phdr64) / sizeof(U64),
+    .e_phentsize = sizeof(ELF_Phdr64),
     .e_phnum = 0,
-    .e_shentsize = sizeof(ELF_Shdr64) / sizeof(U64), 
+    .e_shentsize = sizeof(ELF_Shdr64), 
     .e_shnum = 0,
     .e_shstrndx = ELF_SectionIndex_Undef,
 };
@@ -127,6 +126,13 @@ LinkElfFile init_elf(Arena *arena, LinkObject *object) {
     return output;
 }
 
+const U8 blank_page[ELF_AuxType_Pagesz] = { 0 };
+
+internal inline void writeSegment(OS_Handle file, U8 *data, U64 size) {
+    os_file_write(file, (Rng1U64){ 0, size }, data);
+    os_file_write(file, (Rng1U64){ 0, ELF_AuxType_Pagesz - size }, blank_page);
+}
+
 void generate_elf_executable(LinkObject *object, const String8 file_name) {
     LinkElfFile elf_format = init_elf(arena_alloc(), object);
     OS_Handle file = os_file_open(OS_AccessFlag_Write, file_name);
@@ -134,14 +140,42 @@ void generate_elf_executable(LinkObject *object, const String8 file_name) {
     os_file_write(file, (Rng1U64){ 0, sizeof(ELF_Hdr64) }, elf_format.hdr);
     os_file_write(file, (Rng1U64){ 0, sizeof(ELF_Phdr64) * 4 },
                   elf_format.shdr);
+
+    writeSegment(file, object->text, object->text_size);
+    writeSegment(file, object->rodata, object->rodata_size);
+    writeSegment(file, object->data, object->data_size);
+}
+
+struct file_data {
+    U64 size;
+    U8 *data;
+};
+
+internal struct file_data getsegment(Arena *arena, String8 fileName) {
+    OS_Handle file = os_file_open(OS_AccessFlag_Read, fileName);
+    struct file_data out;
+    out.size = os_properties_from_file(text).size;
+    out.data = push_arena(arena, U8, out.size);
+    os_file_read(file, (Rng1U64){ 0, out.size }, out.data);
+    os_file_close(file);
+    return out;
 }
 
 internal no_inline void entry_point(CmdLine *cmdline) {
-    LinkObject test = (LinkObject){
-        .text_size = 10,
-        .data_size = 10,
-        .rodata_size = 10,
-
+    Arena *arena = arena_alloc();
+    struct file_data text =
+        os_file_open(OS_AccessFlag_Read, str8_lit("text.bin"));
+    struct file_data rodata =
+        os_file_open(OS_AccessFlag_Read, str8_lit("rodata.bin"));
+    struct file_data data =
+        os_file_open(OS_AccessFlag_Read, str8_lit("data.bin"));
+    os_file_read() LinkObject test = (LinkObject){
+        .text_size = text.size,
+        .text = text.data,
+        .data_size = data.size,
+        .data = data.data,
+        .rodata_size = rodata.size,
+        .rodata = rodata.data,
     };
     generate_elf_executable(&test, str8_lit("tom.out"));
 }
