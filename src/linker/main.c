@@ -1,9 +1,7 @@
-#include "base/base_strings.h"
+#define BUILD_ENTRY_DEFINING_UNIT 1
+
 #include <elf/elf.h>
-#include <base/base_core.h>
-#include <base/base_arena.h>
-#include "os/core/os_core.h"
-#include "base/base_math.h"
+#include <os/os_inc.h>
 
 #define X64_ELF_BASE_VADDR (4 << 20)
 
@@ -138,7 +136,7 @@ void generate_elf_executable(LinkObject *object, const String8 file_name) {
                   elf_format.shdr);
 }
 
-int main(void) {
+internal no_inline void entry_point(CmdLine *cmdline) {
     LinkObject test = (LinkObject){
         .text_size = 10,
         .data_size = 10,
@@ -146,5 +144,7 @@ int main(void) {
 
     };
     generate_elf_executable(&test, str8_lit("tom.out"));
-    return 0;
 }
+
+#include <base/base_inc.c>
+#include <os/os_inc.c>
