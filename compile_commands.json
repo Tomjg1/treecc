@@ -12,8 +12,8 @@
       "compiler",
       "build.c"
     ],
-    "directory": "/home/thomas/Documents/treecc",
-    "file": "/home/thomas/Documents/treecc/build.c",
-    "output": "/home/thomas/Documents/treecc/compiler"
+    "directory": "/home/thomas/Documents/Capstone/treecc_fork/treecc",
+    "file": "/home/thomas/Documents/Capstone/treecc_fork/treecc/build.c",
+    "output": "/home/thomas/Documents/Capstone/treecc_fork/treecc/compiler"
   }
 ]
