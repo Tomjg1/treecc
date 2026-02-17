@@ -1,1 +1,1 @@
-clang -I../.. -I.. main.c  -o linker -lm
+clang -I../.. -I.. -g main.c  -o linker -lm

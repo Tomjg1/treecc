@@ -73,7 +73,7 @@ LinkElfFile init_elf(Arena *arena, LinkObject *object) {
     const U64 pHeadNum = 4;
 
     output.hdr->e_type = ELF_Type_Exec;
-    output.hdr->e_entry = X64_ELF_BASE_VADDR + 0x224;
+    output.hdr->e_entry = X64_ELF_BASE_VADDR + 0x228;
 
     ELF_Phdr64 *pHead = push_array(arena, ELF_Phdr64, pHeadNum);
     output.phdr = pHead;
