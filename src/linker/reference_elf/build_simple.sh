@@ -2,6 +2,9 @@ gcc -nostdinc -nodefaultlibs -nostartfiles -nostdlib -no-pie -fno-pie start.c &&
 gcc -nostdinc -nodefaultlibs -nostartfiles -nostdlib -no-pie -fno-pie -c undef.c &&
 gcc -nostdinc -nodefaultlibs -nostartfiles -nostdlib -no-pie -fno-pie -c def.c &&
 gcc -nostdinc -nodefaultlibs -nostartfiles -nostdlib -no-pie -fno-pie -r undef.o def.o -o def-undef.o &&
+gcc -nostdinc -nodefaultlibs -nostartfiles -nostdlib -no-pie -fno-pie undef.o def.o -o gcc.out &&
+gcc -nostdinc -nodefaultlibs -nostartfiles -nostdlib -no-pie -fno-pie -c simple.c &&
+gcc -nostdinc -nodefaultlibs -nostartfiles -nostdlib -no-pie -fno-pie  simple.o -o simple.out &&
 readelf def.o --all > elf_def.txt &&
 readelf undef.o --all > elf_undef.txt &&
 readelf def-undef.o --all > elf_def-undef.txt
