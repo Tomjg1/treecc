@@ -1,6 +1,7 @@
 #include <stdio.h>
 #define BUILD_ENTRY_DEFINING_UNIT 1
 
+#include <base/base_inc.h>
 #include <elf/elf.h>
 #include <os/os_inc.h>
 #include <elf/elf_parse.h>
@@ -227,7 +228,6 @@ struct SymbolNode {
     String8 sym_name;
     ELF_Sym64 *sym;
     ElfFile *file;
-    // edges
     // HT chain
     SymbolNode *next;
 };
@@ -315,78 +315,99 @@ typedef struct ElfSection_list {
     struct ElfSection_list *next;
 } ElfSection_list;
 
+typedef struct ElfSegment{
+    ELF_Phdr64 phdr;
+    struct ElfSegment *next;
+} ElfSegment;
 
-typedef struct OutputSections {
+typedef struct ElfSegment_table{
+    ElfSegment *phdrs;
+    U64 count;
+} ElfSegment_table;
+
+U32 segment_flags_from_section(U64 sh_flags) {
+    U32 flags = 0;
+    if (sh_flags & ELF_Shf_Alloc) flags |= ELF_PFlag_Read;
+    if (sh_flags & ELF_Shf_ExecInstr) flags |= ELF_PFlag_Exec;
+    if (sh_flags & ELF_Shf_Write) flags |= ELF_PFlag_Write;
+    return flags;
+}
+typedef struct OutputSections { // group by name
     String8 section_name;
-    U64 section_flags;
-    U64 section_type;
     ElfSection_list *sections;
     struct OutputSections *next;
 } OutputSections;
 
-typedef struct OutputElfile {
+typedef struct OutputSegment { // group by flag/type
+    ELF_Phdr64 phdr;
+    U64 flags;
+    OutputSections *sections;
+    OutputSections *no_bit_sections;
+} OutputSegment;
+
+typedef struct OutputElfExe {
     LinkingTable global_table;
     ElfFile_array input;
-    OutputSections *output;
-} OutputElfile;
+    OutputSegment output[3];
+    U64 segment_count;
+} OutputElfExe;
 
 static U8 section_category(U64 flags, U64 type) {
-    if (!(flags & ELF_Shf_Alloc)) return 5;
-    if (flags & ELF_Shf_ExecInstr) return 1; // RX
-    if (flags & ELF_Shf_Write) {
-        if (type == ELF_ShType_NoBits) return 4; // RW
-        return 3; // RW
+    U8 out;
+    if (!(flags & ELF_Shf_Alloc)) {
+        Assert(0); // non Allocatables cannot be included.
+    } else if (flags & ELF_Shf_ExecInstr) {
+        out = 0; // RX
+    } else if (flags & ELF_Shf_Write) {
+        out = 2; // RW
+    } else {
+        out = 1; // R
     }
-    return 2; // R
+    return out;
 }
 
-void load_input_sections(Arena *arena, ElfFile *file, OutputElfile *out_file) {
+void load_input_sections(Arena *arena, ElfFile *file, OutputElfExe *out_file) {
     for EachIndex(i, file->shdrs.count) {
-
-        if (!(file->shdrs.v[i].hdr.sh_flags & ELF_Shf_Alloc) && file->shdrs.v[i].hdr.sh_type == ELF_ShType_Note) { // limited exe only needs Alloc. sections
+        if (!(file->shdrs.v[i].hdr.sh_flags & ELF_Shf_Alloc)) { // limited exe only needs Alloc. sections
             continue;
         }
-
+        /*if (file->shdrs.v[i].hdr.sh_type == ELF_ShType_Note) {
+            out_file->segment_count++;
+            }*/
         String8 sec_name = get_section_name(file, &file->shdrs.v[i].hdr);
         U64 sec_flags = file->shdrs.v[i].hdr.sh_flags;
         U64 sec_type = file->shdrs.v[i].hdr.sh_type;
 
-        OutputSections **it = &out_file->output;
-        while (*it != NULL) {
-            U64 sec_cat = section_category(sec_flags, sec_type);
-            U64 it_cat = section_category((*it)->section_flags, (*it)->section_type);
-            if (sec_cat < it_cat) {
-                break;
+        OutputSections **it = NULL;
+        out_file->output[section_category(sec_flags, sec_type)].flags = sec_flags;
+        if (sec_type == ELF_ShType_NoBits) {
+            it = &out_file->output[section_category(sec_flags, sec_type)].no_bit_sections;
+        } else {
+            it = &out_file->output[section_category(sec_flags, sec_type)].sections;
+            if (*it == NULL) {
+                out_file->segment_count++;
             }
-            if (sec_cat > it_cat) {
-                it = &(*it)->next;
-                continue;
-            }
-            if (str8_is_before(sec_name, (*it)->section_name)) {
-                break;
-            }
+        }
+        while (*it != NULL && str8_is_before(sec_name, (*it)->section_name)) {
             it = &(*it)->next;
         }
-        if (*it == NULL || !str8_match(sec_name, (*it)->section_name, 0)
-            || (*it)->section_flags == sec_flags
-            || (*it)->section_type == sec_type) {
-            OutputSections *new = push_item(arena, OutputSections);
-            new->section_name = sec_name;
-            new->section_flags = sec_flags;
-            new->section_type = sec_type;
-            new->next = *it;
-            *it = new;
+        if (*it == NULL || !str8_match(sec_name, (*it)->section_name, 0)) {
+            OutputSections *section = push_item(arena, OutputSections);
+            section->section_name = sec_name;
+            section->next = *it;
+            *it = section;
         }
-        ElfSection_list *new = push_item(arena, ElfSection_list);
-        new->section = &file->shdrs.v[i];
-        new->file = file;
-        new->next = (*it)->sections;
-        (*it)->sections = new;
+        ElfSection_list *new_section = push_item(arena, ElfSection_list);
+        new_section->section = &file->shdrs.v[i];
+        new_section->file = file;
+        new_section->next = (*it)->sections;
+        (*it)->sections = new_section;
+
     }
 }
 
-internal OutputElfile buildOutputElfFile(Arena *arena, ElfFile_array *array, U64 section_alignment) {
-    OutputElfile output = {0};
+internal OutputElfExe buildOutputElfFile(Arena *arena, ElfFile_array *array, U64 section_alignment, U64 base_image_address) {
+    OutputElfExe output = {0};
     // fill section list
     {
         for EachIndex(i, array->count) {
@@ -396,33 +417,65 @@ internal OutputElfile buildOutputElfFile(Arena *arena, ElfFile_array *array, U64
     // compute offsets, fill linking tables
     {
         output.global_table = init_linking_table();
-        U64 current_memory_offset = 0;
-        U64 current_file_offset = 0;
-        for EachNode(i, OutputSections, output.output) {
-            for EachNode(j, ElfSection_list, i->sections) {
-                current_memory_offset = AlignPow2(current_memory_offset, j->section->hdr.sh_addralign);
+        U64 current_mem_base = base_image_address; //
+        U64 current_file_base = 0; //
+        U64 current_file_offset =  sizeof(ELF_Hdr64) + sizeof(ELF_Phdr64) * output.segment_count; //reserve space for headers
+        U64 current_mem_offset =  current_file_offset + base_image_address;
+        for EachIndex(i, ArrayCount(output.output)) {
+            OutputSegment *segment = &output.output[i];
+            if (segment->sections != NULL) {
+                for EachNode(j, OutputSections, segment->sections) {
+                    for EachNode(it, ElfSection_list, j->sections) {
+                        current_mem_offset = AlignPow2(current_mem_offset, it->section->hdr.sh_addralign);
+                        it->section->memory_offset = current_mem_offset;
 
-                j->section->memory_offset = current_memory_offset;
-                if (j->section->hdr.sh_type != ELF_ShType_NoBits) {
-                    current_file_offset = AlignPow2(current_file_offset, j->section->hdr.sh_addralign);
-                    j->section->file_offset = current_file_offset;
-                    current_file_offset += j->section->hdr.sh_size;
-                }
+                        current_file_offset = AlignPow2(current_file_offset, it->section->hdr.sh_addralign);
+                        it->section->file_offset = current_file_offset;
+                        current_file_offset += it->section->hdr.sh_size;
 
-                current_memory_offset += j->section->hdr.sh_size;
+                        current_mem_offset += it->section->hdr.sh_size;
 
-                for EachIndex(k, j->file->syms.count) {
-                    // load symbol tables
-                    if (ELF_ST_BIND(j->file->syms.v[k].st_info) == ELF_SymBind_Global ) {
-                        add_symbol(arena, &output.global_table, j->file, &j->file->syms.v[k]); // <------ type is also a key, currently only filters name. TODO: handle name collisions by comparing types.
+                        for EachIndex(k, it->file->syms.count) {
+                            // load symbol tables
+                            if (ELF_ST_BIND(it->file->syms.v[k].st_info) == ELF_SymBind_Global ) {
+                                add_symbol(arena, &output.global_table, it->file, &it->file->syms.v[k]); // <------ type is also a key, currently only filters name. TODO: handle name collisions by comparing types.
+                            }
+                        }
                     }
                 }
             }
-            if (!(i->next != NULL && i->next->section_flags == i->section_flags)){
-                current_memory_offset = AlignPow2(current_memory_offset, section_alignment);
-                current_file_offset = AlignPow2(current_file_offset, section_alignment);
+            if (segment->no_bit_sections != NULL) {
+                for EachNode(j, OutputSections, segment->sections) {
+                    for EachNode(it, ElfSection_list, j->sections) {
+                        current_mem_offset = AlignPow2(current_mem_offset, it->section->hdr.sh_addralign);
+                        it->section->memory_offset = current_mem_offset;
 
+                        current_mem_offset += it->section->hdr.sh_size;
+
+                        for EachIndex(k, it->file->syms.count) {
+                            // load symbol tables
+                            if (ELF_ST_BIND(it->file->syms.v[k].st_info) == ELF_SymBind_Global ) {
+                                add_symbol(arena, &output.global_table, it->file, &it->file->syms.v[k]); // <------ type is also a key, currently only filters name. TODO: handle name collisions by comparing types.
+                            }
+                        }
+                    }
+                }
             }
+            ELF_Phdr64 phdr = {0};
+            phdr.p_align = section_alignment;
+            phdr.p_filesz = current_file_offset - current_file_base;
+            phdr.p_offset = current_file_base;
+            phdr.p_vaddr = current_mem_base;
+            phdr.p_paddr = current_mem_base;
+            phdr.p_memsz = current_mem_offset - current_mem_base;
+            phdr.p_flags = segment_flags_from_section(segment->flags);
+            phdr.p_type = ELF_PType_Load;
+
+            current_mem_base = AlignPow2(current_mem_offset, section_alignment);
+            current_file_base = AlignPow2(current_file_offset, section_alignment);
+            current_mem_offset = current_mem_base;
+            current_file_offset = current_file_base;
+            segment->phdr = phdr;
         }
     }
     return output;
@@ -441,10 +494,7 @@ String8 load_section_data(Arena *arena, ElfFile *file, ELF_Shdr64 *shdr) {
 }
 
 
-void apply_all_relocations(LinkingTable *global_table, ElfFile *file, ElfSection *shdr, String8 sec_data, U64 base_image_address){
-    if ((base_image_address & 0xFFF) != 0) {
-        return;
-    }
+void apply_all_relocations(LinkingTable *global_table, ElfFile *file, ElfSection *shdr, String8 sec_data){
 
     for EachNode(it, ElfRela64_Node, shdr->relas) {
         for EachIndex(i, it->relas.count) {
@@ -465,13 +515,13 @@ void apply_all_relocations(LinkingTable *global_table, ElfFile *file, ElfSection
                 U64 S = 0;
                 {
                     if (sym->st_shndx != ELF_SectionIndex_Abs) {
-                        S = base_image_address + sym_file->shdrs.v[sym->st_shndx].memory_offset + sym->st_value;
+                        S = sym_file->shdrs.v[sym->st_shndx].memory_offset + sym->st_value;
                     } else {
                         S = sym->st_value;
                     }
                 }
                 S64 A = it->relas.v[i].r_addend;
-                U64 P = base_image_address + shdr->memory_offset + it->relas.v[i].r_offset;
+                U64 P = shdr->memory_offset + it->relas.v[i].r_offset;
                 switch (ELF64_R_TYPE(it->relas.v[i].r_info)) {
                 case ELF_RelocX8664_64: {
                     *(U64 *)(sec_data.str + it->relas.v[i].r_offset) = S + A;
@@ -481,32 +531,44 @@ void apply_all_relocations(LinkingTable *global_table, ElfFile *file, ElfSection
                 }break;
                 case ELF_RelocX8664_Pc32: {
                     *(S32 *)(sec_data.str + it->relas.v[i].r_offset) = (S32)((S + A) - P);
-                }
+                }break;
                 }
             }
         }
     }
 }
 
-typedef struct ElfSegment{
-    ELF_Phdr64 phdr;
-    struct ElfSegment *next;
-} ElfSegment;
+/*ELF_Phdr64 build_segment_header(Arena *arena, OutputSegment *segment, U64 base_image_address) {
+    ELF_Phdr64 phdr = {0};
+    for EachNode(section_list, OutputSections, segment->sections) {
+        for EachNode(ot, ElfSection_list, section_list->sections) {
+            ELF_Shdr64 *sh = &ot->section->hdr;
 
-typedef struct ElfSegment_table{
-    ElfSegment *phdrs;
-    U64 count;
-} ElfSegment_table;
+            if (!(sh->sh_flags & ELF_Shf_Alloc)) continue;
 
-U32 segment_flags_from_section(ELF_Shdr64 *shdr) {
-    U32 flags = 0;
-    if (shdr->sh_flags & ELF_Shf_Alloc) flags |= ELF_PFlag_Read;
-    if (shdr->sh_flags & ELF_Shf_ExecInstr) flags |= ELF_PFlag_Exec;
-    if (shdr->sh_flags & ELF_Shf_Write) flags |= ELF_PFlag_Write;
-    return flags;
+            U32 flags = segment_flags_from_section(sh);
+
+            U64 sec_offset = ot->section->file_offset;
+            U64 sec_vaddr = base_image_address + ot->section->memory_offset;
+
+            U64 filesz = (sh->sh_type == ELF_ShType_NoBits) ? 0 : sh->sh_size;
+            U64 memsz = sh->sh_size;
+
+
+            phdr.p_type = ELF_PType_Load;
+            phdr.p_flags = flags;
+            phdr.p_offset = sec_offset;
+            phdr.p_vaddr = sec_vaddr;
+            phdr.p_paddr = sec_vaddr;
+            phdr.p_filesz = filesz;
+            phdr.p_memsz = memsz;
+            phdr.p_align = 0x1000;
+        }
+    }
+    return phdr;
 }
 
-internal ElfSegment_table generate_program_header(Arena *arena, OutputElfile *file, U64 base_image_address) {
+internal ElfSegment_table generate_program_header(Arena *arena, OutputElfExe *file, U64 base_image_address) {
     ElfSegment_table table = {0};
     ElfSegment *current_node = NULL;
 
@@ -514,8 +576,9 @@ internal ElfSegment_table generate_program_header(Arena *arena, OutputElfile *fi
         return table;
     }
 
-    for EachNode(it, OutputSections, file->output) {
-        for EachNode(ot, ElfSection_list, it->sections) {
+    for EachIndex(section_list, ArrayCount(file->output)) {
+        ElfSection_list section
+        for EachNode(ot, ElfSection_list, section->sections) {
             ELF_Shdr64 *sh = &ot->section->hdr;
 
             if (!(sh->sh_flags & ELF_Shf_Alloc)) continue;
@@ -553,7 +616,7 @@ internal ElfSegment_table generate_program_header(Arena *arena, OutputElfile *fi
         }
     }
     return table;
-}
+}*/
 
 //default elf header layout
 read_only ELF_Hdr64 default_header =
@@ -585,71 +648,65 @@ read_only ELF_Hdr64 default_header =
 
 #define rng_append(r, a) (Rng1U64)rng_1u64((r).max,(r).max + a)
 
-internal void build_elf_exe(Arena *arena, OutputElfile *output,
+internal void build_elf_exe(Arena *arena, OutputElfExe *output,
                                    String8 output_filename) {
     // write header and segment data
     OS_Handle output_file = os_file_open(OS_AccessFlag_Write, output_filename);
 
     Temp temp = temp_begin(arena);
 
-    ElfSegment_table table = generate_program_header(temp.arena, output, 0x400000);
-
 
     ELF_Hdr64 hdr = {0};
     MemoryCopyStruct(&hdr, &default_header);
 
     hdr.e_phoff = sizeof(ELF_Hdr64);
-    hdr.e_phnum = table.count;
+    hdr.e_phnum = output->segment_count;
     U64 entry_address = 0;
     {
         SymbolNode *entry_symbol = get_symbol(&output->global_table, str8_lit("_start"));
-        U64 st_offset = 0x400000 + entry_symbol->file->shdrs.v[entry_symbol->sym->st_shndx].memory_offset;
+        U64 st_offset = entry_symbol->file->shdrs.v[entry_symbol->sym->st_shndx].memory_offset;
         entry_address = entry_symbol->sym->st_value + st_offset;
     }
     hdr.e_entry = entry_address;
     hdr.e_type = ELF_Type_Exec;
     Rng1U64 rng = rng_1u64(0, sizeof(ELF_Hdr64));
     os_file_write(output_file, rng, &hdr);
-
-    for EachNode(it, ElfSegment, table.phdrs) {
-        rng = rng_append(rng, sizeof(ELF_Phdr64));
-        os_file_write(output_file, rng, &it->phdr);
-    }
     temp_end(temp);
     // load file section data
-    for EachNode(it, OutputSections, output->output) {
-        for EachNode(ot, ElfSection_list, it->sections) {
-            if (ot->section->hdr.sh_type == ELF_ShType_NoBits) continue;
-            Temp temp = temp_begin(arena);
-            String8 data = load_section_data(temp.arena, ot->file, &ot->section->hdr);
-            // apply relocations
-            apply_all_relocations(&output->global_table, ot->file, ot->section, data, 0x400000);
-            U64 aligned = AlignPow2(rng.max, ot->section->hdr.sh_addralign);
-            U64 padding = aligned - rng.max;
-            if (padding > 0) {
-                rng = rng_append(rng, padding);
-                U8 *zeros = push_array(temp.arena, U8, padding);
-                os_file_write(output_file, rng, zeros);
+    for EachIndex(i, ArrayCount(output->output)) {
+        OutputSegment segments = output->output[i];
+
+        for EachNode(it, OutputSections, segments.sections) {
+            for EachNode (ot, ElfSection_list, it->sections) {
+                if (ot->section->hdr.sh_type == ELF_ShType_NoBits) continue;
+                Temp temp = temp_begin(arena);
+                String8 data = load_section_data(temp.arena, ot->file, &ot->section->hdr);
+                // apply relocations
+                apply_all_relocations(&output->global_table, ot->file, ot->section, data);
+                os_file_write(output_file, rng_1u64(ot->section->file_offset, ot->section->file_offset + data.size), data.str);
+                temp_end(temp);
             }
-            rng= rng_append(rng, data.size);
-            os_file_write(output_file, rng, data.str);
-            temp_end(temp);
         }
+    }
+    for EachIndex(i, ArrayCount(output->output)) {
+        rng = rng_append(rng, sizeof(output->output[i].phdr));
+        os_file_write(output_file, rng, &output->output[i].phdr);
     }
 }
 
-
-
-void build_elf_exe_single_input (Arena *arena, ElfFile *file) {
-    OutputElfile out = buildOutputElfFile(arena, &(ElfFile_array){.v = file, .count = 1}, 0x1000);
-    build_elf_exe(arena, &out, str8_lit("./reference_elf/out.elf"));
-}
 
 internal no_inline void entry_point(CmdLine *cmdline) {
     Arena *arena = arena_alloc();
-    ElfFile file = read_elf_file(arena, str8_lit("./reference_elf/simple.o"));
-    build_elf_exe_single_input(arena, &file);
-
+    ElfFile files[2] = {
+         read_elf_file(arena, str8_lit("./reference_elf/undef.o")),
+         read_elf_file(arena, str8_lit("./reference_elf/def.o"))
+    };
+    ElfFile_array files_array = {
+        .v = files,
+        .count = ArrayCount(files),
+    };
+    OutputElfExe exe = buildOutputElfFile(arena, &files_array, 0x1000, 0x400000);
+    build_elf_exe(arena, &exe, str8_lit("elf.out"));
 }
 
 #include <base/base_inc.c>
