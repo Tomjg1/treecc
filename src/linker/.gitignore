@@ -1,0 +1,4 @@
+reference_elf/*.o
+reference_elf/*.out
+libc/**
+elf.out
