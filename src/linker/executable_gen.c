@@ -95,10 +95,18 @@ typedef struct TrieNode {
 
 typedef struct Trie {
     TrieNode *root;
+    Arena *arena;
 } Trie;
 
+#define TRIE_LOOKUP_LENGTH 16
+#define TRIE_LOOKUP_MASK (TRIE_LOOKUP_LENGTH - 1)
+#define TRIE_HASH(c) ((c) & (TRIE_LOOKUP_LENGTH))
+
 TrieNode *trie_node_lookup(TrieNode *node, char key) {
-    U64 hash = key % node->count;
+    if (node->lookup == NULL) {
+        return NULL;
+    }
+    U64 hash = TRIE_HASH(key);
     TrieNode *cnode = node->lookup[hash];
     while (cnode != NULL) {
         if (cnode->prefix.str[0] != key) {
@@ -128,6 +136,28 @@ TriePrefixMatchResult trie_prefix_search(TrieNode **node, String8 *key) {
     return match;
 }
 
+
+TrieNode *trie_node_alloc(Trie *trie, String8 key, void *value, TrieMatch match_type) {
+    TrieNode *node = push_item(trie->arena, TrieNode);
+    node->prefix = key;
+    node->type = match_type;
+    node->value = value;
+    return node;
+}
+
+void trie_node_insert(Trie *trie, TrieNode *node, TrieNode *child){
+    if (node->lookup == NULL) {
+        node->lookup = push_array(trie->arena, TrieNode *, TRIE_LOOKUP_LENGTH);
+        node->count = TRIE_LOOKUP_LENGTH;
+    }
+    U64 hash = TRIE_HASH(child->prefix.str[0]);
+    TrieNode **bucket = &node->lookup[hash];
+    while ((*bucket) != NULL) {
+        bucket = &(*bucket)->neighbor;
+    }
+    *bucket = child;
+
+}
 
 /*
  *
@@ -164,14 +194,10 @@ TrieNode *trie_lookup(Trie *trie, String8 key) {
 
 }
 
-TrieNode *trie_node_alloc(Trie *trie, String8 key, void *value, TrieMatch match_type) {
-    TrieNode *node = push_item(arena, TrieNode);
-    node->lookup = push_array(arena, T, c)
-}
 
-TrieNode *trie_insert(Arena *arena, Trie *trie, String8 key, void *value, TrieMatch match_type) {
+TrieNode *trie_insert(Trie *trie, String8 key, void *value, TrieMatch match_type) {
     if (trie->root == NULL) {
-        trie->root = trie_node_alloc(key, value, match_type);
+        trie->root = trie_node_alloc(trie, key, value, match_type);
         return trie->root;
     }
 
@@ -180,59 +206,48 @@ TrieNode *trie_insert(Arena *arena, Trie *trie, String8 key, void *value, TrieMa
 
     switch (res.type) {
         case TRIE_PREFIX_MATCH_EQUAL: {
-            // node already exists, update it
             node->value = value;
-            node->type  = match_type;
+            node->type = match_type;
             return node;
         }
         case TRIE_PREFIX_MATCH_FULL: {
-            // prefix matched, key has more — add a child
-            TrieNode *child = trie_node_alloc(key, value, match_type);
-            trie_node_insert(node, child);
+            TrieNode *child = trie_node_alloc(trie, key, value, match_type);
+            trie_node_insert(trie, node, child);
             return child;
         }
         case TRIE_PREFIX_MATCH_SHORT: {
-            // key is a prefix of node->prefix — split
-            // e.g. node = ".text.cold", key = ".text."
-            //   -> node becomes ".text." (new value)
-            //   -> child gets "cold" (old node contents)
             String8 old_suffix = str8_skip(node->prefix, key.size);
 
-            TrieNode *child   = trie_node_alloc(old_suffix, node->value, node->type);
-            child->lookup     = node->lookup;
-            child->count      = node->count;
+            TrieNode *child = trie_node_alloc(trie, old_suffix, node->value, node->type);
+            child->lookup = node->lookup;
+            child->count = node->count;
 
             node->prefix = key;
-            node->value  = value;
-            node->type   = match_type;
+            node->value = value;
+            node->type = match_type;
             node->lookup = NULL;
-            node->count  = 0;
-            trie_node_insert(node, child);
+            node->count = 0;
+            trie_node_insert(trie, node, child);
             return node;
         }
         case TRIE_PREFIX_MATCH_MISMATCH: {
-            // key and node->prefix diverge mid-way — split at the fork
-            // e.g. node = ".text.cold", key = ".text.hot"
-            //   -> node becomes ".text." (NONE, no value)
-            //   -> old child gets "cold"
-            //   -> new child gets "hot"
-            String8 common     = str8(node->prefix.str, res.offset);
+            String8 common = str8(node->prefix.str, res.offset);
             String8 old_suffix = str8_skip(node->prefix, res.offset);
             String8 new_suffix = str8_skip(key, res.offset);
 
-            TrieNode *old_child = trie_node_alloc(old_suffix, node->value, node->type);
-            old_child->lookup   = node->lookup;
-            old_child->count    = node->count;
+            TrieNode *old_child = trie_node_alloc(trie, old_suffix, node->value, node->type);
+            old_child->lookup = node->lookup;
+            old_child->count = node->count;
 
-            TrieNode *new_child = trie_node_alloc(new_suffix, value, match_type);
+            TrieNode *new_child = trie_node_alloc(trie, new_suffix, value, match_type);
 
             node->prefix = common;
-            node->value  = NULL;
-            node->type   = TRIE_MATCH_NONE;
+            node->value = NULL;
+            node->type = TRIE_MATCH_NONE;
             node->lookup = NULL;
-            node->count  = 0;
-            trie_node_insert(node, old_child);
-            trie_node_insert(node, new_child);
+            node->count = 0;
+            trie_node_insert(trie, node, old_child);
+            trie_node_insert(trie, node, new_child);
             return new_child;
         }
     }
