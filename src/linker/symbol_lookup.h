@@ -23,19 +23,19 @@ struct SymbolNode {
     SymbolNode *next;
 };
 
-typedef struct LinkingTable {
+typedef struct SymbolTable {
     Arena *arena;
     SymbolNode **lookup;
     U64 count;
-} LinkingTable;
+} SymbolTable;
 
-LinkingTable init_linking_table(U64 count);
+SymbolTable init_linking_table(U64 count);
 
-internal SymbolNode *get_symbol(LinkingTable *table, String8 sym_name);
+internal SymbolNode *get_symbol(SymbolTable *table, String8 sym_name);
 
-internal LinkerError add_symbol(Arena *arena, LinkingTable *table,
+internal LinkerError add_symbol(Arena *arena, SymbolTable *table,
                                 ElfFile *file, ELF_Sym64 *sym);
 
-void deinit_linking_table(LinkingTable *table);
+void deinit_linking_table(SymbolTable *table);
 
 #endif // LINKER_SYMBOL_LOOKUP_H

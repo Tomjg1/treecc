@@ -1,12 +1,47 @@
 #include <linker/parser.h>
 
-
 internal static U64 read_section(OS_Handle file, ELF_Shdr64 *shdr,
                                  void *out_data) {
     return os_file_read(
         file, rng_1u64(shdr->sh_offset, shdr->sh_offset + shdr->sh_size),
         out_data);
 }
+
+/**
+ * \brief attempts to read an ELF header from file handle
+ * returns a zero-initialized header in case of error
+ * The filename is required for error logging, errors are logged to the selected log.
+ * \param file[in] file handle the ELF header will be read from must be a valid handle.
+ * \param filename[in] name of the file.
+ */
+internal static ELF_Hdr64 read_header_from_handle(OS_Handle file, String8 filename) {
+    // zero initalize structs
+    ELF_Hdr64 hdr = { 0 };
+
+    // fetch elf identifier to check ELF type.
+    U64 bytes_read = os_file_read(
+        file, rng_1u64(0, sizeof(ELF_Hdr64)), &hdr);
+
+    if (bytes_read == sizeof(ELF_Hdr64)) {
+        String8 file_magic_number = { // we make use of the fact that 0x7f E L F is at the start of the file
+            .str = hdr.e_ident,
+            .size = elf_magic_string.size,
+        };
+        if (
+            str8_match(file_magic_number, elf_magic_string, 0) && // checks to ensure the ELF file is valid
+            hdr.e_ident[ELF_Identifier_Class] == ELF_Class_64 &&
+            hdr.e_ident[ELF_Identifier_OsAbi] == 0 &&
+            hdr.e_ident[ELF_Identifier_Data] == ELF_Data_2LSB) {
+            bytes_read = os_file_read_struct(file, 0, &hdr);
+            return hdr;
+        }
+
+    }
+    log_msgf(LogMsgKind_UserError, "Invalid or corrupted ELF header in %s.", filename); // push error to log.
+    return (ELF_Hdr64){ 0 };
+}
+
+internal
 
 internal ElfFile read_elf_file(Arena *arena, String8 filename) {
     ElfFile file = { 0 };
@@ -17,27 +52,7 @@ internal ElfFile read_elf_file(Arena *arena, String8 filename) {
             return file;
         file.fileName = filename;
 
-        U8 elf_ident[ELF_Identifier_Max] = { 0 };
-
-        U64 bytes_read = os_file_read(
-            file.handle, rng_1u64(0, sizeof(elf_ident)), elf_ident);
-
-        String8 file_magic_number = {
-            .str = elf_ident,
-            .size = elf_magic_string.size,
-        };
-        if (bytes_read == ELF_Identifier_Max &&
-            str8_match(file_magic_number, elf_magic_string, 0) &&
-            elf_ident[ELF_Identifier_Class] == ELF_Class_64 &&
-            elf_ident[ELF_Identifier_OsAbi] == 0 &&
-            elf_ident[ELF_Identifier_Data] == ELF_Data_2LSB) {
-            ELF_Hdr64 hdr = { 0 };
-            bytes_read = os_file_read_struct(file.handle, 0, &hdr);
-
-            if (bytes_read == sizeof(hdr)) {
-                file.hdr = hdr;
-            }
-        }
+        file.hdr = read_header_from_handle(file.handle, filename);
     }
     // TG: read elf section header
     {

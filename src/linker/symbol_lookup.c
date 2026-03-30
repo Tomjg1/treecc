@@ -3,7 +3,7 @@
 #include <linker/symbol_lookup.h>
 
 
-static U64 new_hash(String8 name) {
+static U32 new_hash(String8 name) {
     uint32_t h = 5381;
     for
         EachIndex(i, name.size) {
@@ -12,15 +12,15 @@ static U64 new_hash(String8 name) {
     return h;
 }
 
-LinkingTable init_linking_table(U64 count) {
-    LinkingTable table = { 0 };
+SymbolTable init_linking_table(U64 count) {
+    SymbolTable table = { 0 };
     table.arena = arena_alloc();
     table.count = count;
     table.lookup = push_array(table.arena, SymbolNode *, table.count);
     return table;
 }
 
-internal SymbolNode *get_symbol(LinkingTable *table, String8 sym_name) {
+internal SymbolNode *get_symbol(SymbolTable *table, String8 sym_name) {
     if (table->count == 0) {
         return NULL;
     }
@@ -36,7 +36,7 @@ internal SymbolNode *get_symbol(LinkingTable *table, String8 sym_name) {
     return node;
 }
 
-internal LinkerError add_symbol(Arena *arena, LinkingTable *table,
+internal LinkerError add_symbol(Arena *arena, SymbolTable *table,
                                 ElfFile *file, ELF_Sym64 *sym) {
     if (table->count == 0) {
         return LINKER_ERROR_GENERIC;
@@ -79,6 +79,6 @@ internal LinkerError add_symbol(Arena *arena, LinkingTable *table,
     return LINKER_ERROR_NONE;
 }
 
-void deinit_linking_table(LinkingTable *table) {
+void deinit_linking_table(SymbolTable *table) {
     arena_release(table->arena);
 }

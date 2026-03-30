@@ -1,5 +1,244 @@
 #include <linker/executable_gen.h>
 
+/*
+
+.init
+.text
+.text.*
+
+
+.init
+.fini
+.text
+.text.*
+
+ELF file is opened.
+
+Sections are loaded into a trie based on their name,
+unmatched flags are moved into a section based on there flags
+output sections are grouped into output segments
+output segments are written to disk
+
+
+How to handle merge sections?
+
+merge sections should be merged with matching sections
+
+
+ */
+
+typedef enum {
+    TRIE_PREFIX_MATCH_MISMATCH = 0,
+    TRIE_PREFIX_MATCH_SHORT,
+    TRIE_PREFIX_MATCH_FULL,
+    TRIE_PREFIX_MATCH_EQUAL,
+} TriePrefixMatch;
+
+typedef struct TriePrefixMatchResult{
+    TriePrefixMatch type;
+    U64 offset;
+} TriePrefixMatchResult;
+
+TriePrefixMatchResult trie_string8_match_prefix (String8 prefix, String8 other) {
+    TriePrefixMatchResult res = { 0 };
+    U64 len = Min(prefix.size, other.size);
+    U64 i = 0;
+    for (; i < len ;i++) {
+        if (prefix.str[i] != other.str[i]) {
+            res.type = TRIE_PREFIX_MATCH_MISMATCH;
+            res.offset = i;
+            return res;
+        }
+    }
+    res.offset = i;
+    if (other.size > prefix.size){
+        res.type = TRIE_PREFIX_MATCH_FULL;
+    } else if (other.size < prefix.size) {
+        res.type = TRIE_PREFIX_MATCH_SHORT;
+    } else {
+        res.type = TRIE_PREFIX_MATCH_EQUAL;
+    }
+
+    return res;
+}
+
+typedef enum {
+    TRIE_MATCH_WILDCARD,
+    TRIE_MATCH_EXACT,
+    TRIE_MATCH_NONE,
+} TrieMatch;
+
+typedef struct InputSection {
+    String8 name;
+    U64 flags;
+    U64 type;
+    ElfSection_list *head;
+    ElfSection_list *tail;
+} InputSection;
+
+typedef struct OutputSection {
+    String8 name;
+    U64 flags;
+    U64 type;
+    InputSection *head;
+    InputSection *tail;
+} OutputSection;
+
+typedef struct TrieNode {
+    String8 prefix; // something like .text.
+    void *value;
+    TrieMatch type;
+    struct TrieNode **lookup;
+    struct TrieNode *neighbor;
+    U64 count;
+} TrieNode;
+
+typedef struct Trie {
+    TrieNode *root;
+} Trie;
+
+TrieNode *trie_node_lookup(TrieNode *node, char key) {
+    U64 hash = key % node->count;
+    TrieNode *cnode = node->lookup[hash];
+    while (cnode != NULL) {
+        if (cnode->prefix.str[0] != key) {
+            break;
+        }
+        cnode = cnode->neighbor;
+    }
+    return cnode;
+}
+
+TriePrefixMatchResult trie_prefix_search(TrieNode **node, String8 *key) {
+    // check prefix
+    TrieNode *cnode = *node;
+    String8 ckey = *key;
+    TriePrefixMatchResult match = { 0 };
+    while (cnode != NULL) {
+        match = trie_string8_match_prefix(cnode->prefix, ckey);
+        if (match.type != TRIE_PREFIX_MATCH_FULL) {
+            break;
+        }
+        ckey = str8_skip(ckey, cnode->prefix.size);
+        cnode = trie_node_lookup(cnode, ckey.str[0]);
+    }
+    *node = cnode;
+    *key = ckey;
+
+    return match;
+}
+
+
+/*
+ *
+ switch (match.type) {
+ case TRIE_PREFIX_MATCH_SHORT: {
+ }break;
+ case TRIE_PREFIX_MATCH_MISMATCH: {
+
+ }break;
+ case TRIE_PREFIX_MATCH_FULL: {}break;
+ case TRIE_PREFIX_MATCH_EQUAL: {}break;
+ }
+ */
+
+TrieNode *trie_lookup(Trie *trie, String8 key) {
+    TrieNode *node = trie->root;
+    TriePrefixMatchResult res = trie_prefix_search(&node, &key);
+    switch (res.type) {
+    case TRIE_PREFIX_MATCH_SHORT:
+    case TRIE_PREFIX_MATCH_MISMATCH: {
+    }break;
+    case TRIE_PREFIX_MATCH_FULL: {
+        if (node->type != TRIE_MATCH_NONE){
+            return node;
+        }
+    }break;
+    case TRIE_PREFIX_MATCH_EQUAL: {
+        if (node->type == TRIE_MATCH_WILDCARD) {
+            return node;
+        }
+    }break;
+    }
+    return NULL;
+
+}
+
+TrieNode *trie_node_alloc(Trie *trie, String8 key, void *value, TrieMatch match_type) {
+    TrieNode *node = push_item(arena, TrieNode);
+    node->lookup = push_array(arena, T, c)
+}
+
+TrieNode *trie_insert(Arena *arena, Trie *trie, String8 key, void *value, TrieMatch match_type) {
+    if (trie->root == NULL) {
+        trie->root = trie_node_alloc(key, value, match_type);
+        return trie->root;
+    }
+
+    TrieNode *node = trie->root;
+    TriePrefixMatchResult res = trie_prefix_search(&node, &key);
+
+    switch (res.type) {
+        case TRIE_PREFIX_MATCH_EQUAL: {
+            // node already exists, update it
+            node->value = value;
+            node->type  = match_type;
+            return node;
+        }
+        case TRIE_PREFIX_MATCH_FULL: {
+            // prefix matched, key has more — add a child
+            TrieNode *child = trie_node_alloc(key, value, match_type);
+            trie_node_insert(node, child);
+            return child;
+        }
+        case TRIE_PREFIX_MATCH_SHORT: {
+            // key is a prefix of node->prefix — split
+            // e.g. node = ".text.cold", key = ".text."
+            //   -> node becomes ".text." (new value)
+            //   -> child gets "cold" (old node contents)
+            String8 old_suffix = str8_skip(node->prefix, key.size);
+
+            TrieNode *child   = trie_node_alloc(old_suffix, node->value, node->type);
+            child->lookup     = node->lookup;
+            child->count      = node->count;
+
+            node->prefix = key;
+            node->value  = value;
+            node->type   = match_type;
+            node->lookup = NULL;
+            node->count  = 0;
+            trie_node_insert(node, child);
+            return node;
+        }
+        case TRIE_PREFIX_MATCH_MISMATCH: {
+            // key and node->prefix diverge mid-way — split at the fork
+            // e.g. node = ".text.cold", key = ".text.hot"
+            //   -> node becomes ".text." (NONE, no value)
+            //   -> old child gets "cold"
+            //   -> new child gets "hot"
+            String8 common     = str8(node->prefix.str, res.offset);
+            String8 old_suffix = str8_skip(node->prefix, res.offset);
+            String8 new_suffix = str8_skip(key, res.offset);
+
+            TrieNode *old_child = trie_node_alloc(old_suffix, node->value, node->type);
+            old_child->lookup   = node->lookup;
+            old_child->count    = node->count;
+
+            TrieNode *new_child = trie_node_alloc(new_suffix, value, match_type);
+
+            node->prefix = common;
+            node->value  = NULL;
+            node->type   = TRIE_MATCH_NONE;
+            node->lookup = NULL;
+            node->count  = 0;
+            trie_node_insert(node, old_child);
+            trie_node_insert(node, new_child);
+            return new_child;
+        }
+    }
+    return NULL;
+}
+
 static U32 segment_flags_from_section(U64 sh_flags) {
     U32 flags = 0;
     if (sh_flags & ELF_Shf_Alloc) flags |= ELF_PFlag_Read;
@@ -8,14 +247,12 @@ static U32 segment_flags_from_section(U64 sh_flags) {
     return flags;
 }
 
-static U8 section_category(U64 flags, U64 type) {
+static U8 get_loadable_segment_order(U64 flags) {
     U8 out;
     if (!(flags & ELF_Shf_Alloc)) {
         Assert(0); // non Allocatables cannot be included.
     } else if (flags & ELF_Shf_ExecInstr) {
         out = 1; // RX
-    } else if (flags & ELF_Shf_Write && flags & ELF_Shf_Tls ) {
-        out = 4; // Thread local storage RW
     } else if (flags & ELF_Shf_Write) {
         out = 3; // RW
     } else {
@@ -29,19 +266,22 @@ void load_input_sections(Arena *arena, ElfFile *file, OutputElfExe *out_file) {
         if (!(file->shdrs.v[i].hdr.sh_flags & ELF_Shf_Alloc)) { // limited exe only needs Alloc. sections <-- possibly add header data to it's own page for simplicity
             continue;
         }
-        /*if (file->shdrs.v[i].hdr.sh_type == ELF_ShType_Note) {
-            out_file->segment_count++;
-            }*/
+        if (
+            (file->shdrs.v[i].hdr.sh_flags & (ELF_Shf_Tls || ELF_Shf_ExecInstr)) // executable TLS
+            == (ELF_Shf_Tls || ELF_Shf_ExecInstr)) {
+            continue; // TODO pass info back to user that this combo is odd
+        }
+
         String8 sec_name = get_section_name(file, &file->shdrs.v[i].hdr);
         U64 sec_flags = file->shdrs.v[i].hdr.sh_flags;
         U64 sec_type = file->shdrs.v[i].hdr.sh_type;
 
         OutputSections **it = NULL;
-        out_file->output[section_category(sec_flags, sec_type)].flags = sec_flags;
+        out_file->output[get_loadable_segment_order(sec_flags)].flags = sec_flags;
         if (sec_type == ELF_ShType_NoBits) {
-            it = &out_file->output[section_category(sec_flags, sec_type)].no_bit_sections;
+            it = &out_file->output[get_loadable_segment_order(sec_flags)].no_bit_sections;
         } else {
-            it = &out_file->output[section_category(sec_flags, sec_type)].sections;
+            it = &out_file->output[get_loadable_segment_order(sec_flags)].prog_sections;
             if (*it == NULL) {
                 out_file->segment_count++;
             }
@@ -102,7 +342,7 @@ internal OutputElfExe buildOutputElfFile(Arena *arena, ElfFile_array *array, U64
     }
     // compute offsets, fill linking tables
     {
-        
+
         output.global_table = init_linking_table(100);
         U64 current_mem_base = base_image_address; //
         U64 current_file_base = 0; //
@@ -110,8 +350,8 @@ internal OutputElfExe buildOutputElfFile(Arena *arena, ElfFile_array *array, U64
         U64 current_mem_offset =  current_file_offset + base_image_address;
         for EachIndex(i, ArrayCount(output.output)) {
             OutputSegment *segment = &output.output[i];
-            if (segment->sections != NULL) {
-                for EachNode(j, OutputSections, segment->sections) {
+            if (segment->prog_sections != NULL) {
+                for EachNode(j, OutputSections, segment->prog_sections) {
                     for EachNode(it, ElfSection_list, j->sections) {
                         current_mem_offset = AlignPow2(current_mem_offset, it->section->hdr.sh_addralign);
                         it->section->memory_offset = current_mem_offset;
@@ -132,7 +372,7 @@ internal OutputElfExe buildOutputElfFile(Arena *arena, ElfFile_array *array, U64
                 }
             }
             if (segment->no_bit_sections != NULL) {
-                for EachNode(j, OutputSections, segment->sections) {
+                for EachNode(j, OutputSections, segment->prog_sections) {
                     for EachNode(it, ElfSection_list, j->sections) {
                         current_mem_offset = AlignPow2(current_mem_offset, it->section->hdr.sh_addralign);
                         it->section->memory_offset = current_mem_offset;
@@ -181,7 +421,7 @@ String8 load_section_data(Arena *arena, ElfFile *file, ELF_Shdr64 *shdr) {
 }
 
 
-void apply_all_relocations(LinkingTable *global_table, ElfFile *file, ElfSection *shdr, String8 sec_data){
+void apply_all_relocations(SymbolTable *global_table, ElfFile *file, ElfSection *shdr, String8 sec_data){
 
     for EachNode(it, ElfRela64_Node, shdr->relas) {
         for EachIndex(i, it->relas.count) {
@@ -258,7 +498,7 @@ internal void build_elf_exe(Arena *arena, OutputElfExe *output,
     for EachIndex(i, ArrayCount(output->output)) {
         OutputSegment segments = output->output[i];
 
-        for EachNode(it, OutputSections, segments.sections) {
+        for EachNode(it, OutputSections, segments.prog_sections) {
             for EachNode (ot, ElfSection_list, it->sections) {
                 if (ot->section->hdr.sh_type == ELF_ShType_NoBits) continue;
                 Temp temp = temp_begin(arena);

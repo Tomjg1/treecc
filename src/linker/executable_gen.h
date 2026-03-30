@@ -36,14 +36,17 @@ typedef struct OutputSections { // group by name
 typedef struct OutputSegment { // group by flag/type
     ELF_Phdr64 phdr;
     U64 flags;
-    OutputSections *sections;
+    OutputSections *prog_sections;  // output section is chosen by the type
     OutputSections *no_bit_sections;
+    OutputSections *note_sections;
 } OutputSegment;
 
 typedef struct OutputElfExe {
-    LinkingTable global_table;
+    SymbolTable global_table;
     ElfFile_array input;
     OutputSegment output[5];
+    U8 non_exec_stack;
+
     U64 segment_count;
 } OutputElfExe;
 
@@ -54,7 +57,7 @@ internal OutputElfExe buildOutputElfFile(Arena *arena, ElfFile_array *array, U64
 String8 load_section_data(Arena *arena, ElfFile *file, ELF_Shdr64 *shdr);
 
 
-void apply_all_relocations(LinkingTable *global_table, ElfFile *file, ElfSection *shdr, String8 sec_data);
+void apply_all_relocations(SymbolTable *global_table, ElfFile *file, ElfSection *shdr, String8 sec_data);
 
 internal void build_elf_exe(Arena *arena, OutputElfExe *output,
                                    String8 output_filename);
