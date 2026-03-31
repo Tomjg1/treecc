@@ -1,3 +1,4 @@
+#include "symbol_lookup.h"
 #include <linker/executable_gen.h>
 
 /*
@@ -68,21 +69,6 @@ typedef enum {
     TRIE_MATCH_NONE,
 } TrieMatch;
 
-typedef struct InputSection {
-    String8 name;
-    U64 flags;
-    U64 type;
-    ElfSection_list *head;
-    ElfSection_list *tail;
-} InputSection;
-
-typedef struct OutputSection {
-    String8 name;
-    U64 flags;
-    U64 type;
-    InputSection *head;
-    InputSection *tail;
-} OutputSection;
 
 typedef struct TrieNode {
     String8 prefix; // something like .text.
@@ -97,6 +83,19 @@ typedef struct Trie {
     TrieNode *root;
     Arena *arena;
 } Trie;
+
+Trie trie_init() {
+    return (Trie) {
+        .arena = arena_alloc(),
+        .root = NULL,
+    };
+}
+
+void trie_release(Trie *trie) {
+    arena_release( trie->arena);
+    trie->arena = NULL;
+    trie->root = NULL;
+}
 
 #define TRIE_LOOKUP_LENGTH 16
 #define TRIE_LOOKUP_MASK (TRIE_LOOKUP_LENGTH - 1)
@@ -194,7 +193,6 @@ TrieNode *trie_lookup(Trie *trie, String8 key) {
 
 }
 
-
 TrieNode *trie_insert(Trie *trie, String8 key, void *value, TrieMatch match_type) {
     if (trie->root == NULL) {
         trie->root = trie_node_alloc(trie, key, value, match_type);
@@ -253,6 +251,203 @@ TrieNode *trie_insert(Trie *trie, String8 key, void *value, TrieMatch match_type
     }
     return NULL;
 }
+
+typedef struct ElfSection_list {
+    ElfSection *section; // ElfSection has final offsets for every section involved (points to input_files)
+    ElfFile *file;
+    struct ElfSection_list *next;
+} ElfSection_list;
+
+typedef struct InputSection {// OutputSections will be added to the trie for loading
+    String8 name;
+    U64 flags;
+    U64 type;
+    ElfSection_list *next;
+    ElfSection_list *tail;
+} InputSection;
+
+typedef struct LinkerSection {
+    String8 name;
+    U64 flags;
+    U64 type;
+    InputSection *next;
+    InputSection *tail;
+} LinkerSection;
+
+typedef struct LinkerSegment {
+    U64 flags;
+    U64 type;
+} LinkerSegment;
+
+typedef struct LinkerAlignment {
+    U64 alignment;
+} LinkerAlignment;
+
+typedef struct LinkerSymbol {
+    String8 name;
+    U64 type;
+    U64 size;
+
+} LinkerSymbol;
+
+typedef enum LinkerObjType{
+    LinkerObjType_SEGMENT,
+    LinkerObjType_SECTION,
+    LinkerObjType_ALIGNMENT,
+    LinkerObjType_SYMBOL,
+    LinkerObjType_COUNT,
+} LinkerObjType;
+
+typedef struct LinkerObject {
+    LinkerObjType type;
+    struct LinkerObject *parent;
+    struct LinkerObject *next;
+    struct LinkerObject *prev;
+    struct LinkerObject *child;
+    union {
+        LinkerSegment segment;
+        LinkerSection section;
+        LinkerAlignment align;
+        LinkerSymbol symbol;
+    } obj;
+} LinkerObject;
+
+void linker_object_add_neighbor(LinkerObject *node, LinkerObject *neighbor) {
+    neighbor->parent = node->parent; // they share parents
+    neighbor->prev = node;
+    neighbor->next = node->next;
+    node->next->prev = neighbor;
+    node->next = neighbor;
+
+}
+
+void linker_object_add_child(LinkerObject *parent, LinkerObject *child) {
+    child->parent = parent;
+    if (parent->child == NULL) {
+        parent->child = child;
+        child->next = child;
+        child->prev = child;
+    } else {
+        child->prev = parent->child->prev;
+        child->prev->next = child;
+        child->next = parent->child;
+        parent->child->prev = child;
+    }
+}
+
+LinkerObject *linker_object_remove_child(LinkerObject *parent, LinkerObject *child) {
+    if (parent->child == NULL || child->parent != parent) {
+        return NULL;
+    }
+    if (child->next == child) {
+        parent->child = NULL;
+    } else {
+        child->prev->next = child->next;
+        child->next->prev = child->prev;
+        if (child == parent->child)
+            parent->child = child->next;
+    }
+
+    child->parent = NULL;
+    child->next = NULL;
+    child->prev = NULL;
+}
+
+typedef struct LinkerExeOutput {
+    Arena *arena;
+    ElfFile_array *input_files;
+    LinkerObject *root;
+    LinkerObject *cursor;
+    SymbolTable global_table;
+    Trie section_trie;
+    LinkerObject *freeList;
+    U64 phdr_count;
+} LinkerExeOutput;
+
+LinkerExeOutput linker_exe_output_init(void) {
+    return (LinkerExeOutput) {
+        .arena = arena_alloc(),
+        .section_trie = trie_init(),
+    };
+}
+
+LinkerObject *linker_exe_output_alloc_obj(LinkerExeOutput *output) {
+    LinkerObject *ret = NULL;
+    if (output->freeList != NULL) {
+        ret = output->freeList;
+        output->freeList = output->freeList->next;
+    } else {
+        ret = push_item(output->arena, LinkerObject);
+    }
+    return ret;
+}
+
+void linker_exe_start_segment(LinkerExeOutput *output, U64 type, U64 flags) {
+    if (output->root == NULL) {
+        output->root = linker_exe_output_alloc_obj(output);
+        output->cursor = output->root;
+    } else {
+        LinkerObject *new = linker_exe_output_alloc_obj(output);
+        linker_object_add_child(output->cursor, new);
+        output->cursor = new;
+    }
+    output->phdr_count++;
+    output->cursor->type = LinkerObjType_SEGMENT,
+    output->cursor->obj.segment =
+        (LinkerSegment) {
+            .type = type,
+            .flags = flags,
+        };
+}
+
+void linker_exe_end_segment(LinkerExeOutput *output) { // TODO: add Error handling
+    if (output->cursor == NULL) {
+        Assert(0);
+    }
+    if (output->cursor->type != LinkerObjType_SEGMENT) {
+        Assert(0);
+    }
+    output->cursor = output->cursor->parent;
+}
+
+void linker_exe_start_section(LinkerExeOutput *output, String8 key) { // TODO: add Error handling
+    if (output->cursor == NULL) {
+        Assert(0);
+    }
+    if (output->cursor != LinkerObjType_SEGMENT) {
+        Assert(0);
+    }
+
+}
+
+/*
+test = linker_exe_init(void)
+linker_exe_start_segment(alloc, readable, executable)
+linker_exe_add_section(".init")
+linker_exe_start_output_section(".text")
+linker_exe_add_section(".text")
+linker_exe_add_section(".text.*")
+linker_exe_end_output_section()
+linker_exe_add_section(".fini")
+linker_exe_add_alignment(PAGESIZE)
+linker_exe_end_segment()
+linker_exe_start_segment(alloc, read, write)
+linker_exe_start_relro_segment()
+linker_exe_add_section(".tdata")
+linker_add_section(".tbss")
+linker_exe_add_alignment(PAGESIZE)
+linker_exe_end_relro_segment()
+linker_add_section(".data")
+linker_add_section(".bss")
+linker_exe_add_alignment(PAGESIZE)
+linker_exe_end_segment()
+linker_exe_end_segment()
+linker_exe_stack_section(".note.gnustack")
+
+
+ */
+
+
 
 static U32 segment_flags_from_section(U64 sh_flags) {
     U32 flags = 0;

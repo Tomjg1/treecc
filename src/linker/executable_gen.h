@@ -10,7 +10,7 @@ typedef struct ElfFile_array {
     ElfFile *v;
     U64 count;
 } ElfFile_array;
-
+/*
 typedef struct ElfSection_list {
     ElfSection *section;
     ElfFile *file;
@@ -40,7 +40,7 @@ typedef struct OutputSegment { // group by flag/type
     OutputSections *no_bit_sections;
     OutputSections *note_sections;
 } OutputSegment;
-
+*/
 typedef struct OutputElfExe {
     SymbolTable global_table;
     ElfFile_array input;
