@@ -50,7 +50,7 @@ typedef struct OutputElfExe {
     U64 segment_count;
 } OutputElfExe;
 
-void load_input_sections(Arena *arena, ElfFile *file, OutputElfExe *out_file);
+void load_input_sections(OutputElfExe *output, ElfFile *file);
 
 internal OutputElfExe buildOutputElfFile(Arena *arena, ElfFile_array *array, U64 section_alignment, U64 base_image_address);
 

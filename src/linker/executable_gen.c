@@ -1,3 +1,4 @@
+#include "parser.h"
 #include "symbol_lookup.h"
 #include <linker/executable_gen.h>
 
@@ -303,6 +304,11 @@ typedef struct LinkerObject {
     struct LinkerObject *next;
     struct LinkerObject *prev;
     struct LinkerObject *child;
+    U64 offset;
+    U64 vaddr;
+    U64 file_size;
+    U64 mem_size;
+    U64 align;
     union {
         LinkerSegment segment;
         LinkerOutputSection output_section;
@@ -503,7 +509,42 @@ linker_exe_stack_section(".note.gnustack")
 
  */
 
+void load_input_sections (LinkerExeOutput *output, ElfFile *file) {
+    for EachIndex(i, file->shdrs.count) {
+        ElfSection *section = &file->shdrs.v[i];
+        if (!(file->shdrs.v[i].hdr.sh_flags & ELF_Shf_Alloc)) { // limited exe only needs Alloc. sections <-- possibly add header data to it's own page for simplicity
+            continue;
+        }
+        String8 section_name = get_section_name(file, &section->hdr);
+        TrieNode *trie_node = trie_lookup(&output->section_trie, section_name);
+        if (trie_node == NULL) {
+            Assert(0); // TODO implement default location for segments
+        }
+        LinkerObject *node = trie_node->value;
+        if (node->type != LinkerObjType_INPUT_SECTION) {
+            Assert(0);
+        }
+        LinkerInputSection *input_section = &node->obj.input_section;
+        if (input_section->flags != section->hdr.sh_flags || input_section->type!= section->hdr.sh_type) {
+            continue;
+        }
+        if (input_section->head == NULL) {
+            input_section->head = push_item(output->arena, ElfSection_list);
+            input_section->tail = input_section->head;
+        } else {
+            input_section->tail->next = push_item(output->arena, ElfSection_list);
+            input_section->tail = input_section->tail->next;
+        }
+        input_section->tail->section = section;
+        input_section->tail->file = file;
+    }
+}
 
+void load_input_files(LinkerExeOutput *output, ElfFile_array files) {
+    for EachIndex(i, files.count) {
+        load_input_sections(output, &files.v[i]);
+    }
+}
 
 static U32 segment_flags_from_section(U64 sh_flags) {
     U32 flags = 0;
@@ -527,47 +568,51 @@ static U8 get_loadable_segment_order(U64 flags) {
     return out;
 }
 
-void load_input_sections(Arena *arena, ElfFile *file, OutputElfExe *out_file) {
-    for EachIndex(i, file->shdrs.count) {
-        if (!(file->shdrs.v[i].hdr.sh_flags & ELF_Shf_Alloc)) { // limited exe only needs Alloc. sections <-- possibly add header data to it's own page for simplicity
-            continue;
-        }
-        if (
-            (file->shdrs.v[i].hdr.sh_flags & (ELF_Shf_Tls || ELF_Shf_ExecInstr)) // executable TLS
-            == (ELF_Shf_Tls || ELF_Shf_ExecInstr)) {
-            continue; // TODO pass info back to user that this combo is odd
-        }
+typedef struct LinkerSegment_array {
+    ELF_Phdr64 *v;
+    U64 count;
+} LinkerSegment_array;
 
-        String8 sec_name = get_section_name(file, &file->shdrs.v[i].hdr);
-        U64 sec_flags = file->shdrs.v[i].hdr.sh_flags;
-        U64 sec_type = file->shdrs.v[i].hdr.sh_type;
+typedef struct LinkerPositionState {
+    U64 offset;
+    U64 vaddr;
+    U64 file_size;
+    U64 mem_size;
+    U64 align;
+} LinkerPositionState;
 
-        LinkerInputSection **it = NULL;
-        out_file->output[get_loadable_segment_order(sec_flags)].flags = sec_flags;
-        if (sec_type == ELF_ShType_NoBits) {
-            it = &out_file->output[get_loadable_segment_order(sec_flags)].no_bit_sections;
-        } else {
-            it = &out_file->output[get_loadable_segment_order(sec_flags)].prog_sections;
-            if (*it == NULL) {
-                out_file->segment_count++;
-            }
+void compute_positions_linker_tree(LinkerExeOutput *output, LinkerObject *obj, LinkerPositionState *state) {
+    while (obj != NULL) {
+        switch (obj->type) {
+        case LinkerObjType_OUTPUT_SECTION:
+        case LinkerObjType_SEGMENT: {
+            obj->offset = state->offset;
+            obj->vaddr = state->vaddr;
+            compute_positions_linker_tree(output, obj->child, state);
+            obj->file_size = state->file_size;
+            obj->mem_size = state->mem_size;
+            obj->align = state->align;
+        }break;
+        case LinkerObjType_ALIGNMENT: {
+            obj->offset = AlignPow2(obj->offset, obj->obj.align.alignment);
+            obj->vaddr = AlignPow2(obj->vaddr, obj->obj.align.alignment);
+        }break;
+        case LinkerObjType_INPUT_SECTION: {
+            // TODO: implement input section processing
+        }break;
         }
-        while (*it != NULL && str8_is_before(sec_name, (*it)->section_name)) {
-            it = &(*it)->next;
-        }
-        if (*it == NULL || !str8_match(sec_name, (*it)->section_name, 0)) {
-            LinkerInputSection *section = push_item(arena, OutputSections);
-            section->section_name = sec_name;
-            section->next = *it;
-            *it = section;
-        }
-        ElfSection_list *new_section = push_item(arena, ElfSection_list);
-        new_section->section = &file->shdrs.v[i];
-        new_section->file = file;
-        new_section->next = (*it)->sections;
-        (*it)->sections = new_section;
-
+        state->offset += state->file_size;
+        state->vaddr += state->mem_size;
+        state->file_size = 0;
+        state->mem_size = 0;
+        state->align = 0;
     }
+
+}
+
+
+void linker_position_sections(LinkerExeOutput *output) {
+    LinkerSegment_array
 }
 
 //default elf header layout
