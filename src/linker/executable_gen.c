@@ -99,7 +99,7 @@ void trie_release(Trie *trie) {
 
 #define TRIE_LOOKUP_LENGTH 16
 #define TRIE_LOOKUP_MASK (TRIE_LOOKUP_LENGTH - 1)
-#define TRIE_HASH(c) ((c) & (TRIE_LOOKUP_LENGTH))
+#define TRIE_HASH(c) ((c) & (TRIE_LOOKUP_MASK))
 
 TrieNode *trie_node_lookup(TrieNode *node, char key) {
     if (node->lookup == NULL) {
@@ -108,7 +108,7 @@ TrieNode *trie_node_lookup(TrieNode *node, char key) {
     U64 hash = TRIE_HASH(key);
     TrieNode *cnode = node->lookup[hash];
     while (cnode != NULL) {
-        if (cnode->prefix.str[0] != key) {
+        if (cnode->prefix.str[0] == key) {
             break;
         }
         cnode = cnode->neighbor;
@@ -178,12 +178,12 @@ TrieNode *trie_lookup(Trie *trie, String8 key) {
     case TRIE_PREFIX_MATCH_SHORT:
     case TRIE_PREFIX_MATCH_MISMATCH: {
     }break;
-    case TRIE_PREFIX_MATCH_FULL: {
+    case TRIE_PREFIX_MATCH_EQUAL: {
         if (node->type != TRIE_MATCH_NONE){
             return node;
         }
     }break;
-    case TRIE_PREFIX_MATCH_EQUAL: {
+    case TRIE_PREFIX_MATCH_FULL: {
         if (node->type == TRIE_MATCH_WILDCARD) {
             return node;
         }
@@ -258,21 +258,19 @@ typedef struct ElfSection_list {
     struct ElfSection_list *next;
 } ElfSection_list;
 
-typedef struct InputSection {// OutputSections will be added to the trie for loading
+typedef struct LinkerInputSection {// OutputSections will be added to the trie for loading
     String8 name;
     U64 flags;
     U64 type;
-    ElfSection_list *next;
+    ElfSection_list *head;
     ElfSection_list *tail;
-} InputSection;
+} LinkerInputSection;
 
-typedef struct LinkerSection {
+typedef struct LinkerOutputSection {
     String8 name;
     U64 flags;
     U64 type;
-    InputSection *next;
-    InputSection *tail;
-} LinkerSection;
+} LinkerOutputSection;
 
 typedef struct LinkerSegment {
     U64 flags;
@@ -291,10 +289,11 @@ typedef struct LinkerSymbol {
 } LinkerSymbol;
 
 typedef enum LinkerObjType{
-    LinkerObjType_SEGMENT,
-    LinkerObjType_SECTION,
-    LinkerObjType_ALIGNMENT,
-    LinkerObjType_SYMBOL,
+    LinkerObjType_SEGMENT, // used to create program header
+    LinkerObjType_OUTPUT_SECTION, // groups input sections into output sections
+    LinkerObjType_INPUT_SECTION, // sections to be linked together
+    LinkerObjType_ALIGNMENT, // ensures current offset is aligned
+    LinkerObjType_SYMBOL, // create a symbol
     LinkerObjType_COUNT,
 } LinkerObjType;
 
@@ -306,7 +305,8 @@ typedef struct LinkerObject {
     struct LinkerObject *child;
     union {
         LinkerSegment segment;
-        LinkerSection section;
+        LinkerOutputSection output_section;
+        LinkerInputSection input_section;
         LinkerAlignment align;
         LinkerSymbol symbol;
     } obj;
@@ -349,8 +349,9 @@ LinkerObject *linker_object_remove_child(LinkerObject *parent, LinkerObject *chi
     }
 
     child->parent = NULL;
-    child->next = NULL;
-    child->prev = NULL;
+    child->next = child;
+    child->prev = child;
+    return child;
 }
 
 typedef struct LinkerExeOutput {
@@ -379,18 +380,27 @@ LinkerObject *linker_exe_output_alloc_obj(LinkerExeOutput *output) {
     } else {
         ret = push_item(output->arena, LinkerObject);
     }
+    ret->next = ret;
+    ret->prev = ret;
     return ret;
 }
 
-void linker_exe_start_segment(LinkerExeOutput *output, U64 type, U64 flags) {
-    if (output->root == NULL) {
-        output->root = linker_exe_output_alloc_obj(output);
-        output->cursor = output->root;
+LinkerObject *linker_exe_add_object(LinkerExeOutput *output) {
+    LinkerObject *new = linker_exe_output_alloc_obj(output);
+    if (output->cursor == NULL) { // append to the end of the topmost layer
+        if (output->root == NULL) {
+            output->root = new;
+        } else {
+            linker_object_add_neighbor(output->root->prev, new);
+        }
     } else {
-        LinkerObject *new = linker_exe_output_alloc_obj(output);
         linker_object_add_child(output->cursor, new);
-        output->cursor = new;
     }
+    return new;
+}
+
+void linker_exe_start_segment(LinkerExeOutput *output, U64 type, U64 flags) {
+    output->cursor = linker_exe_add_object(output);
     output->phdr_count++;
     output->cursor->type = LinkerObjType_SEGMENT,
     output->cursor->obj.segment =
@@ -410,14 +420,60 @@ void linker_exe_end_segment(LinkerExeOutput *output) { // TODO: add Error handli
     output->cursor = output->cursor->parent;
 }
 
-void linker_exe_start_section(LinkerExeOutput *output, String8 key) { // TODO: add Error handling
+void linker_exe_start_section(LinkerExeOutput *output, String8 name, U64 type, U64 flags) { // TODO: add Error handling
+    output->cursor = linker_exe_add_object(output);
+    output->cursor->type = LinkerObjType_OUTPUT_SECTION,
+    output->cursor->obj.output_section =
+        (LinkerOutputSection) {
+            .name = name,
+            .type = type,
+            .flags = flags,
+        };
+}
+
+void linker_exe_end_section(LinkerExeOutput *output) {
     if (output->cursor == NULL) {
         Assert(0);
     }
-    if (output->cursor != LinkerObjType_SEGMENT) {
+    if (output->cursor->type != LinkerObjType_OUTPUT_SECTION) {
         Assert(0);
     }
+    output->cursor = output->cursor->parent;
+}
 
+void linker_exe_add_section(LinkerExeOutput *output, String8 name, U64 type, U64 flags, TrieMatch match) {
+    LinkerObject *node = linker_exe_add_object(output);
+    node->type = LinkerObjType_INPUT_SECTION;
+    node->obj.input_section = (LinkerInputSection) {
+        .name = name,
+        .type = type,
+        .flags = flags,
+    };
+    trie_insert(&output->section_trie, name, node, match);
+}
+
+void linker_exe_add_alignment(LinkerExeOutput *output, U64 align) {
+    LinkerObject *node = linker_exe_add_object(output);
+    node->type = LinkerObjType_ALIGNMENT;
+    node->obj.align = (LinkerAlignment) {
+        .alignment = align,
+    };
+}
+
+// special segments
+
+void linker_exe_start_relro(LinkerExeOutput *output) {
+    if (output->cursor == NULL) {
+        Assert(0);
+    }
+    if (output->cursor->type != LinkerObjType_SEGMENT) {
+        Assert(0);
+    }
+    if (output->cursor->obj.segment.flags != (ELF_PFlag_Read | ELF_PFlag_Write) ||
+        output->cursor->obj.segment.type != ELF_PType_Load) {
+            Assert(0);
+    }
+    linker_exe_start_segment(output, ELF_PType_GnuRelro, ELF_PFlag_Read);
 }
 
 /*
@@ -486,7 +542,7 @@ void load_input_sections(Arena *arena, ElfFile *file, OutputElfExe *out_file) {
         U64 sec_flags = file->shdrs.v[i].hdr.sh_flags;
         U64 sec_type = file->shdrs.v[i].hdr.sh_type;
 
-        OutputSections **it = NULL;
+        LinkerInputSection **it = NULL;
         out_file->output[get_loadable_segment_order(sec_flags)].flags = sec_flags;
         if (sec_type == ELF_ShType_NoBits) {
             it = &out_file->output[get_loadable_segment_order(sec_flags)].no_bit_sections;
@@ -500,7 +556,7 @@ void load_input_sections(Arena *arena, ElfFile *file, OutputElfExe *out_file) {
             it = &(*it)->next;
         }
         if (*it == NULL || !str8_match(sec_name, (*it)->section_name, 0)) {
-            OutputSections *section = push_item(arena, OutputSections);
+            LinkerInputSection *section = push_item(arena, OutputSections);
             section->section_name = sec_name;
             section->next = *it;
             *it = section;
