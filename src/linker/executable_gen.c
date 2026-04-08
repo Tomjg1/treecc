@@ -28,7 +28,7 @@ merge sections should be merged with matching sections
 
 
  */
-
+/*
 typedef enum {
     TRIE_PREFIX_MATCH_MISMATCH = 0,
     TRIE_PREFIX_MATCH_SHORT,
@@ -84,7 +84,7 @@ typedef struct Trie {
     TrieNode *root;
     Arena *arena;
 } Trie;
-
+*/
 Trie trie_init() {
     return (Trie) {
         .arena = arena_alloc(),
@@ -124,13 +124,13 @@ TriePrefixMatchResult trie_prefix_search(TrieNode **node, String8 *key) {
     TriePrefixMatchResult match = { 0 };
     while (cnode != NULL) {
         match = trie_string8_match_prefix(cnode->prefix, ckey);
+        *node = cnode;
         if (match.type != TRIE_PREFIX_MATCH_FULL) {
             break;
         }
         ckey = str8_skip(ckey, cnode->prefix.size);
         cnode = trie_node_lookup(cnode, ckey.str[0]);
     }
-    *node = cnode;
     *key = ckey;
 
     return match;
@@ -252,7 +252,7 @@ TrieNode *trie_insert(Trie *trie, String8 key, void *value, TrieMatch match_type
     }
     return NULL;
 }
-
+/*
 typedef struct ElfSection_list {
     ElfSection *section; // ElfSection has final offsets for every section involved (points to input_files)
     ElfFile *file;
@@ -270,7 +270,6 @@ typedef struct LinkerInputSection {// OutputSections will be added to the trie f
 typedef struct LinkerOutputSection {
     String8 name;
     U64 flags;
-    U64 type;
 } LinkerOutputSection;
 
 typedef struct LinkerSegment {
@@ -317,7 +316,7 @@ typedef struct LinkerObject {
         LinkerSymbol symbol;
     } obj;
 } LinkerObject;
-
+*/
 void linker_object_add_neighbor(LinkerObject *node, LinkerObject *neighbor) {
     neighbor->parent = node->parent; // they share parents
     neighbor->prev = node;
@@ -360,6 +359,7 @@ LinkerObject *linker_object_remove_child(LinkerObject *parent, LinkerObject *chi
     return child;
 }
 
+/*
 typedef struct LinkerExeOutput {
     Arena *arena;
     ElfFile_array *input_files;
@@ -370,11 +370,13 @@ typedef struct LinkerExeOutput {
     LinkerObject *freeList;
     U64 phdr_count;
 } LinkerExeOutput;
+*/
 
 LinkerExeOutput linker_exe_output_init(void) {
     return (LinkerExeOutput) {
         .arena = arena_alloc(),
         .section_trie = trie_init(),
+        .global_table = init_linking_table(100),
     };
 }
 
@@ -432,7 +434,6 @@ void linker_exe_start_section(LinkerExeOutput *output, String8 name, U64 type, U
     output->cursor->obj.output_section =
         (LinkerOutputSection) {
             .name = name,
-            .type = type,
             .flags = flags,
         };
 }
@@ -475,16 +476,68 @@ void linker_exe_start_relro(LinkerExeOutput *output) {
     if (output->cursor->type != LinkerObjType_SEGMENT) {
         Assert(0);
     }
-    if (output->cursor->obj.segment.flags != (ELF_PFlag_Read | ELF_PFlag_Write) ||
-        output->cursor->obj.segment.type != ELF_PType_Load) {
+    // output->cursor->obj.segment.flags != (ELF_PFlag_Read | ELF_PFlag_Write) ||
+    if (output->cursor->obj.segment.type != ELF_PType_Load) {
             Assert(0);
     }
     linker_exe_start_segment(output, ELF_PType_GnuRelro, ELF_PFlag_Read);
 }
 
+/*inline void linker_exe_end_relro(LinkerExeOutput *output) {
+    linker_exe_end_segment(output);
+}*/
+
+void linker_exe_start_tls(LinkerExeOutput *output) {
+    if (output->cursor == NULL) {
+        Assert(0);
+    }
+    if (output->cursor->type != LinkerObjType_SEGMENT) {
+        Assert(0);
+    }
+    linker_exe_start_segment(output, ELF_PType_Tls, ELF_PFlag_Read);
+}
+
+void linker_exe_add_padding(LinkerExeOutput *output, U64 padding) {
+    LinkerObject *node = linker_exe_add_object(output);
+    node->type = LinkerObjType_PADDING;
+    node->obj.pad = (LinkerPadding) {
+        .padding = padding,
+    };
+}
+
+void linker_exe_add_header(LinkerExeOutput *output){
+    // check to see if this is the first possible memory location (required by standard)
+    if (output->cursor == NULL) {
+        Assert(0);
+    }
+    LinkerObject *parent = output->cursor;
+    while (parent->parent != NULL) parent = parent->parent;
+    if (parent != output->root) {
+        Assert(0);
+    }
+    linker_exe_add_padding(output, sizeof(ELF_Hdr64));
+}
+
+void linker_exe_add_pheader(LinkerExeOutput *output){
+    if (output->cursor == NULL) {
+        Assert(0);
+    }
+    LinkerObject *node = linker_exe_add_object(output);
+    node->type = LinkerObjType_PADDING;
+    node->obj.pad = (LinkerPadding) {
+        .padding = 0,
+    };
+    output->phdr_node = &node->obj.pad;
+}
+
+/*inline void linker_exe_end_tls(LinkerExeOutput *output) {
+    linker_exe_end_segment(output);
+}*/
+
 /*
 test = linker_exe_init(void)
 linker_exe_start_segment(alloc, readable, executable)
+linker_exe_add_headers()
 linker_exe_add_section(".init")
 linker_exe_start_output_section(".text")
 linker_exe_add_section(".text")
@@ -541,6 +594,7 @@ void load_input_sections (LinkerExeOutput *output, ElfFile *file) {
 }
 
 void load_input_files(LinkerExeOutput *output, ElfFile_array files) {
+    output->input_files = files;
     for EachIndex(i, files.count) {
         load_input_sections(output, &files.v[i]);
     }
@@ -567,7 +621,7 @@ static U8 get_loadable_segment_order(U64 flags) {
     }
     return out;
 }
-
+/*
 typedef struct LinkerSegment_array {
     ELF_Phdr64 *v;
     U64 count;
@@ -576,43 +630,106 @@ typedef struct LinkerSegment_array {
 typedef struct LinkerPositionState {
     U64 offset;
     U64 vaddr;
-    U64 file_size;
-    U64 mem_size;
-    U64 align;
 } LinkerPositionState;
 
-void compute_positions_linker_tree(LinkerExeOutput *output, LinkerObject *obj, LinkerPositionState *state) {
-    while (obj != NULL) {
-        switch (obj->type) {
-        case LinkerObjType_OUTPUT_SECTION:
-        case LinkerObjType_SEGMENT: {
-            obj->offset = state->offset;
-            obj->vaddr = state->vaddr;
-            compute_positions_linker_tree(output, obj->child, state);
-            obj->file_size = state->file_size;
-            obj->mem_size = state->mem_size;
-            obj->align = state->align;
-        }break;
+
+void linker_tree_decend_child(LinkerExeOutput *output, LinkerObject *obj, LinkerPositionState *state) {
+    obj->vaddr = state->vaddr;
+    U64 current_vaddr = state->vaddr;
+    obj->offset = state->offset;
+    U64 current_offset = state->offset;
+    compute_positions_linker_tree(output, obj->child, state);
+    obj->mem_size = state->vaddr - current_vaddr;
+    obj->file_size = state->offset - current_offset;
+}*/
+
+void linker_tree_process_leaf(LinkerExeOutput *output, LinkerObject *obj, LinkerPositionState *state) {
+    switch (obj->type) {
         case LinkerObjType_ALIGNMENT: {
-            obj->offset = AlignPow2(obj->offset, obj->obj.align.alignment);
-            obj->vaddr = AlignPow2(obj->vaddr, obj->obj.align.alignment);
+            state->offset = AlignPow2(state->offset, obj->obj.align.alignment);
+            state->vaddr = AlignPow2(state->vaddr, obj->obj.align.alignment);
         }break;
         case LinkerObjType_INPUT_SECTION: {
-            // TODO: implement input section processing
+            LinkerInputSection *section = &obj->obj.input_section;
+            obj->offset = state->offset;
+            obj->vaddr = state->vaddr;
+            obj->mem_size = 0;
+            obj->file_size = 0;
+            for EachNode(it, ElfSection_list, section->head) {
+                if (section->flags != it->section->hdr.sh_flags) {
+                    Assert(0);
+                }
+                if(section->type != it->section->hdr.sh_type) {
+                    Assert(0);
+                }
+                state->vaddr = AlignPow2(state->vaddr, it->section->hdr.sh_addralign);
+                it->section->file_offset = state->offset;
+                it->section->memory_offset = state->vaddr;
+                obj->mem_size = (state->vaddr - obj->vaddr) + it->section->hdr.sh_size;
+                state->vaddr += it->section->hdr.sh_size;
+                if (section->type != ELF_ShType_NoBits) {
+                    state->offset = AlignPow2(state->offset, it->section->hdr.sh_addralign);
+                    it->section->file_offset = state->offset;
+                    obj->file_size = (state->offset - obj->offset) + it->section->hdr.sh_size;
+                    state->offset += it->section->hdr.sh_size;
+                }
+                for EachIndex(k, it->file->syms.count) {
+                    // load symbol tables
+                    if (ELF_ST_BIND(it->file->syms.v[k].st_info) == ELF_SymBind_Global ) {
+                        add_symbol(output->arena, &output->global_table, it->file, &it->file->syms.v[k]);
+                    }
+                }
+            }
         }break;
+        case LinkerObjType_PADDING: {
+            state->offset += obj->obj.pad.padding;
+            obj->offset +=  obj->obj.pad.padding;
+            state->vaddr +=  obj->obj.pad.padding;
+            obj->vaddr +=  obj->obj.pad.padding;
+            obj->file_size +=  obj->obj.pad.padding;
+            obj->mem_size +=  obj->obj.pad.padding;
         }
-        state->offset += state->file_size;
-        state->vaddr += state->mem_size;
-        state->file_size = 0;
-        state->mem_size = 0;
-        state->align = 0;
+        default: break;
     }
+}
 
+LinkerSizeResult compute_positions_linker_tree(LinkerExeOutput *output, LinkerObject *obj, LinkerPositionState *state) {
+    LinkerObject *first = obj;
+    LinkerSizeResult total = { 0 };
+    do {
+        LinkerSizeResult node_size = { 0 };
+        if (obj->child != NULL) { // leaf node
+            obj->vaddr = state->vaddr;
+            obj->offset = state->offset;
+            node_size = compute_positions_linker_tree(output, obj->child, state);
+            obj->mem_size = node_size.mem_size;
+            obj->file_size = node_size.file_size;
+        } else {
+            linker_tree_process_leaf(output, obj, state);
+            node_size.mem_size += obj->mem_size;
+            node_size.file_size += obj->file_size;
+        }
+        total.mem_size += node_size.mem_size;
+        total.file_size += node_size.file_size;
+        obj = obj->next;
+    } while(obj != first);
+    return total;
 }
 
 
 void linker_position_sections(LinkerExeOutput *output) {
-    LinkerSegment_array
+    if (output->phdr_count == 0) {
+        // odd for an executable to not define output
+
+    }
+    if (output->phdr_node != NULL) {
+        output->phdr_node->padding = sizeof(ELF_Phdr64) * output->phdr_count;
+    }
+    LinkerPositionState state = (LinkerPositionState) {
+        .offset = 0,
+        .vaddr = 0x400000,
+    };
+    compute_positions_linker_tree(output, output->root, &state);
 }
 
 //default elf header layout
@@ -643,82 +760,6 @@ read_only ELF_Hdr64 default_header =
     .e_shstrndx = ELF_SectionIndex_Undef,
 };
 
-internal OutputElfExe buildOutputElfFile(Arena *arena, ElfFile_array *array, U64 section_alignment, U64 base_image_address) {
-    OutputElfExe output = {0};
-    // fill section list
-    {
-        for EachIndex(i, array->count) {
-            load_input_sections(arena, &array->v[i], &output);
-        }
-    }
-    // compute offsets, fill linking tables
-    {
-
-        output.global_table = init_linking_table(100);
-        U64 current_mem_base = base_image_address; //
-        U64 current_file_base = 0; //
-        U64 current_file_offset =  sizeof(ELF_Hdr64) + sizeof(ELF_Phdr64) * output.segment_count; //reserve space for headers
-        U64 current_mem_offset =  current_file_offset + base_image_address;
-        for EachIndex(i, ArrayCount(output.output)) {
-            OutputSegment *segment = &output.output[i];
-            if (segment->prog_sections != NULL) {
-                for EachNode(j, OutputSections, segment->prog_sections) {
-                    for EachNode(it, ElfSection_list, j->sections) {
-                        current_mem_offset = AlignPow2(current_mem_offset, it->section->hdr.sh_addralign);
-                        it->section->memory_offset = current_mem_offset;
-
-                        current_file_offset = AlignPow2(current_file_offset, it->section->hdr.sh_addralign);
-                        it->section->file_offset = current_file_offset;
-                        current_file_offset += it->section->hdr.sh_size;
-
-                        current_mem_offset += it->section->hdr.sh_size;
-
-                        for EachIndex(k, it->file->syms.count) {
-                            // load symbol tables
-                            if (ELF_ST_BIND(it->file->syms.v[k].st_info) == ELF_SymBind_Global ) {
-                                add_symbol(arena, &output.global_table, it->file, &it->file->syms.v[k]); // <------ type is also a key, currently only filters name. TODO: handle name collisions by comparing types.
-                            }
-                        }
-                    }
-                }
-            }
-            if (segment->no_bit_sections != NULL) {
-                for EachNode(j, OutputSections, segment->prog_sections) {
-                    for EachNode(it, ElfSection_list, j->sections) {
-                        current_mem_offset = AlignPow2(current_mem_offset, it->section->hdr.sh_addralign);
-                        it->section->memory_offset = current_mem_offset;
-
-                        current_mem_offset += it->section->hdr.sh_size;
-
-                        for EachIndex(k, it->file->syms.count) {
-                            // load symbol tables
-                            if (ELF_ST_BIND(it->file->syms.v[k].st_info) == ELF_SymBind_Global ) {
-                                add_symbol(arena, &output.global_table, it->file, &it->file->syms.v[k]); // <------ type is also a key, currently only filters name. TODO: handle name collisions by comparing types.
-                            }
-                        }
-                    }
-                }
-            }
-            ELF_Phdr64 phdr = {0};
-            phdr.p_align = section_alignment;
-            phdr.p_filesz = current_file_offset - current_file_base;
-            phdr.p_offset = current_file_base;
-            phdr.p_vaddr = current_mem_base;
-            phdr.p_paddr = current_mem_base;
-            phdr.p_memsz = current_mem_offset - current_mem_base;
-            phdr.p_flags = segment_flags_from_section(segment->flags);
-            phdr.p_type = ELF_PType_Load;
-
-            current_mem_base = AlignPow2(current_mem_offset, section_alignment);
-            current_file_base = AlignPow2(current_file_offset, section_alignment);
-            current_mem_offset = current_mem_base;
-            current_file_offset = current_file_base;
-            segment->phdr = phdr;
-        }
-    }
-    return output;
-}
-
 String8 load_section_data(Arena *arena, ElfFile *file, ELF_Shdr64 *shdr) {
     String8 data = { 0 };
     U8 *data_ptr = push_array(arena, U8, shdr->sh_size);
@@ -730,7 +771,6 @@ String8 load_section_data(Arena *arena, ElfFile *file, ELF_Shdr64 *shdr) {
     }
     return data;
 }
-
 
 void apply_all_relocations(SymbolTable *global_table, ElfFile *file, ElfSection *shdr, String8 sec_data){
 
@@ -776,53 +816,116 @@ void apply_all_relocations(SymbolTable *global_table, ElfFile *file, ElfSection 
     }
 }
 
-
-
-
 #define rng_append(r, a) (Rng1U64)rng_1u64((r).max,(r).max + a)
 
-internal void build_elf_exe(Arena *arena, OutputElfExe *output,
-                                   String8 output_filename) {
+void linker_exe_process_node(OS_Handle output_file, LinkerExeOutput *output ,LinkerObject *obj, ELF_Phdr64Array *phdrs, U64 *root_idx, U64 *sub_idx) {
+    LinkerObject *first = obj;
+    if (obj == NULL) {
+        return;
+    }
+    do {
+        if (obj->type == LinkerObjType_SEGMENT) {
+            LinkerSegment *seg = &obj->obj.segment;
+            ELF_Phdr64 *phdr = NULL;
+            if (obj->parent == NULL) {
+                phdr = &phdrs->v[*root_idx];
+                (*root_idx)++;
+            } else {
+                phdr = &phdrs->v[*sub_idx];
+                (*sub_idx)--;
+            }
+            phdr->p_align = 0x1000; // bad, not all sections have this alignment
+            phdr->p_flags = seg->flags;
+            phdr->p_type = seg->type;
+            phdr->p_filesz = obj->file_size;
+            phdr->p_memsz = obj->mem_size;
+            phdr->p_vaddr = obj->vaddr;
+            phdr->p_paddr = obj->vaddr;
+            phdr->p_offset = obj->offset;
+            linker_exe_process_node(output_file, output, obj->child, phdrs, root_idx, sub_idx);
+        } else if (obj->type == LinkerObjType_INPUT_SECTION) {
+            ElfSection_list *sections = obj->obj.input_section.head;
+            for EachNode(section, ElfSection_list, sections) {
+
+                ElfSection *sec_header = section->section;
+                ElfFile *file = section->file;
+                if (sec_header->hdr.sh_type == ELF_ShType_NoBits) continue;
+                Temp temp = temp_begin(output->arena);
+                String8 data = load_section_data(temp.arena, file, &sec_header->hdr);
+                // apply relocations
+                apply_all_relocations(&output->global_table, file, sec_header, data);
+                os_file_write(output_file, rng_1u64(sec_header->file_offset, sec_header->file_offset + data.size), data.str);
+                temp_end(temp);
+            }
+
+        } else {
+            linker_exe_process_node(output_file, output, obj->child, phdrs, root_idx, sub_idx);
+        }
+        obj = obj->next;
+    } while (obj != first);
+}
+
+ELF_Phdr64Array linker_exe_build(OS_Handle output_file, LinkerExeOutput *output) {
+    ELF_Phdr64Array phdrs = (ELF_Phdr64Array) {
+        .v = push_array(output->arena, ELF_Phdr64, output->phdr_count),
+        .count = output->phdr_count,
+    };
+    U64 root_header_idx = 0;
+    U64 sub_header_idx = output->phdr_count-1;
+    linker_exe_process_node(output_file, output, output->root, &phdrs, &root_header_idx, &sub_header_idx);
+    return phdrs;
+}
+
+internal void output_elf_exe( LinkerExeOutput *output, String8 output_filename) {
     // write header and segment data
     OS_Handle output_file = os_file_open(OS_AccessFlag_Write, output_filename);
 
-    Temp temp = temp_begin(arena);
+    Temp temp = temp_begin(output->arena);
 
 
-    ELF_Hdr64 hdr = {0};
-    MemoryCopyStruct(&hdr, &default_header);
+    ELF_Hdr64 *hdr = &output->header;
+    MemoryCopyStruct(hdr, &default_header);
 
-    hdr.e_phoff = sizeof(ELF_Hdr64);
-    hdr.e_phnum = output->segment_count;
+    hdr->e_phoff = sizeof(ELF_Hdr64);
+    hdr->e_phnum = output->phdr_count;
     U64 entry_address = 0;
     {
         SymbolNode *entry_symbol = get_symbol(&output->global_table, str8_lit("_start"));
-        U64 st_offset = entry_symbol->file->shdrs.v[entry_symbol->sym->st_shndx].memory_offset;
-        entry_address = entry_symbol->sym->st_value + st_offset;
-    }
-    hdr.e_entry = entry_address;
-    hdr.e_type = ELF_Type_Exec;
-    Rng1U64 rng = rng_1u64(0, sizeof(ELF_Hdr64));
-    os_file_write(output_file, rng, &hdr);
-    temp_end(temp);
-    // load file section data
-    for EachIndex(i, ArrayCount(output->output)) {
-        OutputSegment segments = output->output[i];
-
-        for EachNode(it, OutputSections, segments.prog_sections) {
-            for EachNode (ot, ElfSection_list, it->sections) {
-                if (ot->section->hdr.sh_type == ELF_ShType_NoBits) continue;
-                Temp temp = temp_begin(arena);
-                String8 data = load_section_data(temp.arena, ot->file, &ot->section->hdr);
-                // apply relocations
-                apply_all_relocations(&output->global_table, ot->file, ot->section, data);
-                os_file_write(output_file, rng_1u64(ot->section->file_offset, ot->section->file_offset + data.size), data.str);
-                temp_end(temp);
-            }
+        if (entry_symbol != NULL) {
+            U64 st_offset = entry_symbol->file->shdrs.v[entry_symbol->sym->st_shndx].memory_offset;
+            entry_address = entry_symbol->sym->st_value + st_offset;
+        } else {
+            // report error
         }
     }
-    for EachIndex(i, ArrayCount(output->output)) {
-        rng = rng_append(rng, sizeof(output->output[i].phdr));
-        os_file_write(output_file, rng, &output->output[i].phdr);
+    hdr->e_entry = entry_address;
+    hdr->e_type = ELF_Type_Exec;
+    Rng1U64 rng = rng_1u64(0, sizeof(ELF_Hdr64));
+    os_file_write(output_file, rng, hdr);
+    temp_end(temp);
+    // load program headers
+    ELF_Phdr64Array phdrs = linker_exe_build(output_file, output);
+    rng = rng_1u64(rng.max, rng.max + sizeof(ELF_Phdr64) * phdrs.count);
+    os_file_write(output_file, rng, phdrs.v);
+    // load file section data
+}
+/*
+for EachIndex(i, ArrayCount(output->output)) {
+    OutputSegment segments = output->output[i];
+
+    for EachNode(it, OutputSections, segments.prog_sections) {
+        for EachNode (ot, ElfSection_list, it->sections) {
+            if (ot->section->hdr.sh_type == ELF_ShType_NoBits) continue;
+            Temp temp = temp_begin(arena);
+            String8 data = load_section_data(temp.arena, ot->file, &ot->section->hdr);
+            // apply relocations
+            apply_all_relocations(&output->global_table, ot->file, ot->section, data);
+            os_file_write(output_file, rng_1u64(ot->section->file_offset, ot->section->file_offset + data.size), data.str);
+            temp_end(temp);
+        }
     }
 }
+for EachIndex(i, ArrayCount(output->output)) {
+    rng = rng_append(rng, sizeof(output->output[i].phdr));
+    os_file_write(output_file, rng, &output->output[i].phdr);
+} */

@@ -1,7 +1,7 @@
-musl-gcc  -no-pie -fno-pie -static -c undef.c &&
-musl-gcc  -no-pie -fno-pie -static -c def.c &&
-musl-gcc  -no-pie -fno-pie -static -r undef.o def.o -o def-undef.o &&
-musl-gcc  -no-pie -fno-pie -static undef.o def.o -o gcc.out &&
+musl-gcc  -no-pie -fno-pie -static -nostdlib -c undef.c &&
+musl-gcc  -no-pie -fno-pie -static -nostdlib -c def.c &&
+musl-gcc  -no-pie -fno-pie -static -nostdlib -r undef.o def.o -o def-undef.o &&
+musl-gcc  -no-pie -fno-pie -static  -nostdlib undef.o def.o -o gcc.out &&
 readelf def.o --all > elf_def.txt &&
 readelf undef.o --all > elf_undef.txt &&
 readelf def-undef.o --all > elf_def-undef.txt

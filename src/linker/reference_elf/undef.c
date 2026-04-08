@@ -5,10 +5,10 @@ extern int d;
 void func ();
 
 char weak __attribute__((weak)) = '1';
-
+/*
 __thread int thread_test;
 __thread int thread_test_super = 5;
-
+*/
 static void dunc(void) {
     func();
     dunc();
@@ -36,8 +36,11 @@ int main(void) {
         : "r"(msg)
         : "rax", "rdi", "rsi", "rdx"
     );
-    thread_test = 5;
-    thread_test_super = 6;
+    return 1;
+}
+
+void _start(){
+    main();
     __asm__ volatile(
         "movq $60, %%rax\n"   // sys_exit
         "movq $0, %%rdi\n"    // exit status
@@ -46,5 +49,4 @@ int main(void) {
         :
         : "%rax", "%rdi"
     );
-    return 1;
 }
