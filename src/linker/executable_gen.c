@@ -2,89 +2,6 @@
 #include "symbol_lookup.h"
 #include <linker/executable_gen.h>
 
-/*
-
-.init
-.text
-.text.*
-
-
-.init
-.fini
-.text
-.text.*
-
-ELF file is opened.
-
-Sections are loaded into a trie based on their name,
-unmatched flags are moved into a section based on there flags
-output sections are grouped into output segments
-output segments are written to disk
-
-
-How to handle merge sections?
-
-merge sections should be merged with matching sections
-
-
- */
-/*
-typedef enum {
-    TRIE_PREFIX_MATCH_MISMATCH = 0,
-    TRIE_PREFIX_MATCH_SHORT,
-    TRIE_PREFIX_MATCH_FULL,
-    TRIE_PREFIX_MATCH_EQUAL,
-} TriePrefixMatch;
-
-typedef struct TriePrefixMatchResult{
-    TriePrefixMatch type;
-    U64 offset;
-} TriePrefixMatchResult;
-
-TriePrefixMatchResult trie_string8_match_prefix (String8 prefix, String8 other) {
-    TriePrefixMatchResult res = { 0 };
-    U64 len = Min(prefix.size, other.size);
-    U64 i = 0;
-    for (; i < len ;i++) {
-        if (prefix.str[i] != other.str[i]) {
-            res.type = TRIE_PREFIX_MATCH_MISMATCH;
-            res.offset = i;
-            return res;
-        }
-    }
-    res.offset = i;
-    if (other.size > prefix.size){
-        res.type = TRIE_PREFIX_MATCH_FULL;
-    } else if (other.size < prefix.size) {
-        res.type = TRIE_PREFIX_MATCH_SHORT;
-    } else {
-        res.type = TRIE_PREFIX_MATCH_EQUAL;
-    }
-
-    return res;
-}
-
-typedef enum {
-    TRIE_MATCH_WILDCARD,
-    TRIE_MATCH_EXACT,
-    TRIE_MATCH_NONE,
-} TrieMatch;
-
-
-typedef struct TrieNode {
-    String8 prefix; // something like .text.
-    void *value;
-    TrieMatch type;
-    struct TrieNode **lookup;
-    struct TrieNode *neighbor;
-    U64 count;
-} TrieNode;
-
-typedef struct Trie {
-    TrieNode *root;
-    Arena *arena;
-} Trie;
-*/
 Trie trie_init() {
     return (Trie) {
         .arena = arena_alloc(),
@@ -159,18 +76,6 @@ void trie_node_insert(Trie *trie, TrieNode *node, TrieNode *child){
 
 }
 
-/*
- *
- switch (match.type) {
- case TRIE_PREFIX_MATCH_SHORT: {
- }break;
- case TRIE_PREFIX_MATCH_MISMATCH: {
-
- }break;
- case TRIE_PREFIX_MATCH_FULL: {}break;
- case TRIE_PREFIX_MATCH_EQUAL: {}break;
- }
- */
 
 TrieNode *trie_lookup(Trie *trie, String8 key) {
     TrieNode *node = trie->root;
@@ -252,71 +157,7 @@ TrieNode *trie_insert(Trie *trie, String8 key, void *value, TrieMatch match_type
     }
     return NULL;
 }
-/*
-typedef struct ElfSection_list {
-    ElfSection *section; // ElfSection has final offsets for every section involved (points to input_files)
-    ElfFile *file;
-    struct ElfSection_list *next;
-} ElfSection_list;
 
-typedef struct LinkerInputSection {// OutputSections will be added to the trie for loading
-    String8 name;
-    U64 flags;
-    U64 type;
-    ElfSection_list *head;
-    ElfSection_list *tail;
-} LinkerInputSection;
-
-typedef struct LinkerOutputSection {
-    String8 name;
-    U64 flags;
-} LinkerOutputSection;
-
-typedef struct LinkerSegment {
-    U64 flags;
-    U64 type;
-} LinkerSegment;
-
-typedef struct LinkerAlignment {
-    U64 alignment;
-} LinkerAlignment;
-
-typedef struct LinkerSymbol {
-    String8 name;
-    U64 type;
-    U64 size;
-
-} LinkerSymbol;
-
-typedef enum LinkerObjType{
-    LinkerObjType_SEGMENT, // used to create program header
-    LinkerObjType_OUTPUT_SECTION, // groups input sections into output sections
-    LinkerObjType_INPUT_SECTION, // sections to be linked together
-    LinkerObjType_ALIGNMENT, // ensures current offset is aligned
-    LinkerObjType_SYMBOL, // create a symbol
-    LinkerObjType_COUNT,
-} LinkerObjType;
-
-typedef struct LinkerObject {
-    LinkerObjType type;
-    struct LinkerObject *parent;
-    struct LinkerObject *next;
-    struct LinkerObject *prev;
-    struct LinkerObject *child;
-    U64 offset;
-    U64 vaddr;
-    U64 file_size;
-    U64 mem_size;
-    U64 align;
-    union {
-        LinkerSegment segment;
-        LinkerOutputSection output_section;
-        LinkerInputSection input_section;
-        LinkerAlignment align;
-        LinkerSymbol symbol;
-    } obj;
-} LinkerObject;
-*/
 void linker_object_add_neighbor(LinkerObject *node, LinkerObject *neighbor) {
     neighbor->parent = node->parent; // they share parents
     neighbor->prev = node;
@@ -358,19 +199,6 @@ LinkerObject *linker_object_remove_child(LinkerObject *parent, LinkerObject *chi
     child->prev = child;
     return child;
 }
-
-/*
-typedef struct LinkerExeOutput {
-    Arena *arena;
-    ElfFile_array *input_files;
-    LinkerObject *root;
-    LinkerObject *cursor;
-    SymbolTable global_table;
-    Trie section_trie;
-    LinkerObject *freeList;
-    U64 phdr_count;
-} LinkerExeOutput;
-*/
 
 LinkerExeOutput linker_exe_output_init(void) {
     return (LinkerExeOutput) {
@@ -483,10 +311,6 @@ void linker_exe_start_relro(LinkerExeOutput *output) {
     linker_exe_start_segment(output, ELF_PType_GnuRelro, ELF_PFlag_Read);
 }
 
-/*inline void linker_exe_end_relro(LinkerExeOutput *output) {
-    linker_exe_end_segment(output);
-}*/
-
 void linker_exe_start_tls(LinkerExeOutput *output) {
     if (output->cursor == NULL) {
         Assert(0);
@@ -529,10 +353,6 @@ void linker_exe_add_pheader(LinkerExeOutput *output){
     };
     output->phdr_node = &node->obj.pad;
 }
-
-/*inline void linker_exe_end_tls(LinkerExeOutput *output) {
-    linker_exe_end_segment(output);
-}*/
 
 /*
 test = linker_exe_init(void)
@@ -621,27 +441,6 @@ static U8 get_loadable_segment_order(U64 flags) {
     }
     return out;
 }
-/*
-typedef struct LinkerSegment_array {
-    ELF_Phdr64 *v;
-    U64 count;
-} LinkerSegment_array;
-
-typedef struct LinkerPositionState {
-    U64 offset;
-    U64 vaddr;
-} LinkerPositionState;
-
-
-void linker_tree_decend_child(LinkerExeOutput *output, LinkerObject *obj, LinkerPositionState *state) {
-    obj->vaddr = state->vaddr;
-    U64 current_vaddr = state->vaddr;
-    obj->offset = state->offset;
-    U64 current_offset = state->offset;
-    compute_positions_linker_tree(output, obj->child, state);
-    obj->mem_size = state->vaddr - current_vaddr;
-    obj->file_size = state->offset - current_offset;
-}*/
 
 void linker_tree_process_leaf(LinkerExeOutput *output, LinkerObject *obj, LinkerPositionState *state) {
     switch (obj->type) {
@@ -909,23 +708,3 @@ internal void output_elf_exe( LinkerExeOutput *output, String8 output_filename) 
     os_file_write(output_file, rng, phdrs.v);
     // load file section data
 }
-/*
-for EachIndex(i, ArrayCount(output->output)) {
-    OutputSegment segments = output->output[i];
-
-    for EachNode(it, OutputSections, segments.prog_sections) {
-        for EachNode (ot, ElfSection_list, it->sections) {
-            if (ot->section->hdr.sh_type == ELF_ShType_NoBits) continue;
-            Temp temp = temp_begin(arena);
-            String8 data = load_section_data(temp.arena, ot->file, &ot->section->hdr);
-            // apply relocations
-            apply_all_relocations(&output->global_table, ot->file, ot->section, data);
-            os_file_write(output_file, rng_1u64(ot->section->file_offset, ot->section->file_offset + data.size), data.str);
-            temp_end(temp);
-        }
-    }
-}
-for EachIndex(i, ArrayCount(output->output)) {
-    rng = rng_append(rng, sizeof(output->output[i].phdr));
-    os_file_write(output_file, rng, &output->output[i].phdr);
-} */

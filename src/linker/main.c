@@ -44,24 +44,30 @@ void print_nodes(LinkerExeOutput *exe) {
 internal no_inline void entry_point(CmdLine *cmdline) {
     Log *main_log = log_alloc();
     log_select(main_log);
+    U64 file_count = cmdline->inputs.node_count;
+
+    if (file_count == 0) {
+        printf("No Input files provided.\n");
+        return;
+    }
 
     Arena *arena = arena_alloc();
 
-    ElfFile files[2] = {
-         read_elf_file(arena, str8_lit("./reference_elf/undef.o")),
-         read_elf_file(arena, str8_lit("./reference_elf/def.o"))
-    };
+
     ElfFile_array files_array = {
-        .v = files,
-        .count = ArrayCount(files),
+        .v = push_array(arena, ElfFile, file_count),
+        .count = file_count,
     };
+
+    String8Node *node = cmdline->inputs.first;
+    for EachIndex(i, file_count) {
+        files_array.v[i] = read_elf_file(arena, node->string);
+        node = node->next;
+    }
 
     // testing trie
 
     Trie tree = trie_init();
-    trie_insert(&tree, str8_lit("TEST"), NULL , TRIE_MATCH_WILDCARD);
-    trie_insert(&tree, str8_lit("TORRENT"), NULL , TRIE_MATCH_WILDCARD);
-    trie_insert(&tree, str8_lit("TROJAN"), NULL , TRIE_MATCH_WILDCARD);
 
     LinkerExeOutput exe = linker_exe_output_init();
     U64 page_size = 1UL << 12;
@@ -99,6 +105,7 @@ internal no_inline void entry_point(CmdLine *cmdline) {
 
     print_nodes(&exe);
     output_elf_exe(&exe, str8_lit("test.elf"));
+
 
     log_select(NULL); // deselect log before free
     log_release(main_log);
