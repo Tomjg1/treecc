@@ -13,16 +13,20 @@ enum {
   TokenKind_Equals,
   TokenKind_SemiColon,
   TokenKind_Comma,
+  TokenKind_Dot,
 
   TokenKind_LParen,
   TokenKind_RParen,
   TokenKind_LBrace,
   TokenKind_RBrace,
+  TokenKind_LBrack,
+  TokenKind_RBrack,
 
   TokenKind_Plus,
   TokenKind_Minus,
   TokenKind_Star,
   TokenKind_Slash,
+  TokenKind_Percent,
 
   TokenKind_LogicNot,
   TokenKind_LogicEqual,
@@ -40,6 +44,7 @@ enum {
   TokenKind_Else,
   TokenKind_While,
 
+  TokenKind_Struct,
   TokenKind_Fn,
 
   TokenKind_EOF,

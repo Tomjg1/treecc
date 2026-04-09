@@ -197,6 +197,7 @@
 #define EachNonZeroEnumVal(type, it) (type it = (type)1; it < type##_COUNT; it = (type)(it+1))
 #define EachInRange(it, range) (U64 it = (range).min; it < (range).max; it += 1)
 #define EachNode(it, T, first) (T *it = first; it != 0; it = it->next)
+#define EachNodeReverse(it, T, last) (T *it = last; it != 0; it = it->prev)
 
 ////////////////////////////////
 //~ rjf: Memory Operation Macros
@@ -934,6 +935,7 @@ internal B32 u128_match(U128 a, U128 b);
 
 internal U32 u32_from_u64_saturate(U64 x);
 internal U64 u64_up_to_pow2(U64 x);
+internal U64 u64_log2_floor(U64 x);
 internal S32 extend_sign32(U32 x, U32 size);
 internal S64 extend_sign64(U64 x, U64 size);
 

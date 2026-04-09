@@ -1,0 +1,38 @@
+fn int constant_branch() {
+    int t = 54
+
+    if (t > 50) {
+        t = 32
+    } else {
+        t = 42
+    }
+
+    int x = 34
+
+    if (x + t < 100) {
+        t = 12
+    } else {
+        return 3264546
+    }
+
+    if (t == 12) {
+        return x * t
+    }
+
+    return x + t
+}
+
+fn int phi_out(int x) {
+    int t = 54
+
+    if (x + t < 100) {
+        t = 12
+        return x + t
+    } else {
+        return 3264546
+    }
+
+
+
+    return x + t
+}

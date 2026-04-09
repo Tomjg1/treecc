@@ -1,191 +1,14 @@
-// #include "sea.h"
 #include "sea_internal.h"
-#include <assert.h>
-
-#define LATTICE_CELL_COUNT 101
-
-SeaType sea_type_Top = {.kind = SeaLatticeKind_Top};
-SeaType sea_type_Bot = {.kind = SeaLatticeKind_Bot};
-SeaType sea_type_CtrlLive = {.kind = SeaLatticeKind_CtrlLive};
-SeaType sea_type_CtrlDead = {.kind = SeaLatticeKind_CtrlDead};
-SeaType sea_type_S64 = {.kind = SeaLatticeKind_Int, .i = {.min = min_S64, .max = max_S64}};
-
-// If Tuple Data
-SeaType *_ifbothdata[2] = {&sea_type_CtrlLive, &sea_type_CtrlLive};
-SeaType *_ifnethdata[2] = {&sea_type_CtrlDead, &sea_type_CtrlDead};
-SeaType *_iftruedata[2] = {&sea_type_CtrlDead, &sea_type_CtrlLive};
-SeaType *_iffalsedata[2] = {&sea_type_CtrlLive, &sea_type_CtrlDead};
 
 
-SeaType sea_type_IfBoth = {
-    .kind = SeaLatticeKind_Tuple,
-    .tup = {
-        .elems = _ifbothdata,
-        .count = 2,
-    }
-};
-
-SeaType sea_type_IfNeth = {
-    .kind = SeaLatticeKind_Tuple,
-    .tup = {
-        .elems = _ifnethdata,
-        .count = 2,
-    }
-};
-
-SeaType sea_type_IfTrue = {
-    .kind = SeaLatticeKind_Tuple,
-    .tup = {
-        .elems = _iftruedata,
-        .count = 2,
-    }
-};
-
-SeaType sea_type_IfFalse = {
-    .kind = SeaLatticeKind_Tuple,
-    .tup = {
-        .elems = _iffalsedata,
-        .count = 2,
-    }
-};
-
-U64 sea_type_hash(SeaType *t) {
-    SeaType copy = *t;
-    copy.hash_next = 0;
-    switch (t->kind) {
-        case SeaLatticeKind_Tuple: {
-            U8 *buf = (U8*)t->tup.elems;
-            U64 count = sizeof(SeaType*) * t->tup.count;
-            U64 hash = u64_hash_from_str8((String8){buf, count});
-            hash <<= 4;
-            hash >>= 4;
-            hash |= ((t->tup.count & 0x0F) << 60);
-            return hash;
-        } break;
-
-        default: {
-            U8 *buf = (U8*)&copy;
-            return u64_hash_from_str8((String8){buf, sizeof(copy)});
-        } break;
-    }
-}
-
-void sea_type_insert_raw(SeaFunctionGraph *fn, SeaType *t) {
-    U64 idx = sea_type_hash(t) % fn->lat->cap;
-    SeaType **cell = &fn->lat->cells[idx];
-    while (*cell) {
-        *cell = (*cell)->hash_next;
-    }
-    *cell = t;
-}
-
-
-void sea_lattice_init(SeaFunctionGraph *fn) {
-    // Alloc and set up
-    {
-        SeaTypeLattice *lat = push_item(fn->arena, SeaTypeLattice);
-        lat->cells =  push_array(fn->arena, SeaType*, LATTICE_CELL_COUNT);
-        lat->cap = LATTICE_CELL_COUNT;
-        fn->lat = lat;
-    }
-
-
-
-    sea_type_insert_raw(fn, &sea_type_Top);
-    sea_type_insert_raw(fn, &sea_type_Bot);
-    sea_type_insert_raw(fn, &sea_type_CtrlLive);
-    sea_type_insert_raw(fn, &sea_type_CtrlDead);
-    sea_type_insert_raw(fn, &sea_type_S64);
-
-    sea_type_insert_raw(fn, &sea_type_IfBoth);
-    sea_type_insert_raw(fn, &sea_type_IfNeth);
-    sea_type_insert_raw(fn, &sea_type_IfTrue);
-    sea_type_insert_raw(fn, &sea_type_IfFalse);
-
-}
-
-
-
-
-
-B32 sea_type_equal(SeaType *a, SeaType *b) {
-    if (a->kind != b->kind) return 0;
-
-    switch (a->kind) {
-        case SeaLatticeKind_Tuple: {
-            if (a->tup.count != b->tup.count) return 0;
-            return MemoryMatchTyped(a->tup.elems, b->tup.elems, a->tup.count);
-        } break;
-
-        default: {
-            SeaType ca = *a; SeaType cb = *b;
-            ca.hash_next = 0; cb.hash_next = 0;
-            return MemoryMatchStruct(&ca, &cb);
-        } break;
-    }
-}
-
-SeaType *sea_type_canonical(SeaFunctionGraph *fn, SeaType *t) {
-    U64 idx = sea_type_hash(t) % fn->lat->cap;
-    SeaType **cell = &fn->lat->cells[idx];
-    while (*cell) {
-        if (sea_type_equal(*cell, t)) {
-            return *cell;
-        }
-        *cell = (*cell)->hash_next;
-    }
-
-    SeaType *canon = push_item(fn->arena, SeaType);
-
-    *canon = *t;
-    canon->hash_next = 0;
-    *cell = canon;
-
-    return canon;
-}
-
-B32 sea_type_is_const_int(SeaType *t) {
-    switch (t->kind) {
-        case SeaLatticeKind_Int: {
-            return t->i.min == t->i.max;
-        } break;
-    }
-
-    return 0;
-}
-
-S64 sea_type_const_int_val(SeaType *t) {
-    assert(t->i.min == t->i.max);
-    return t->i.min;
-}
-
-SeaType *sea_type_tuple(SeaFunctionGraph *fn, SeaType **elems, U64 count) {
-    SeaType tup = (SeaType){
-        .kind = SeaLatticeKind_Tuple,
-        .tup = {
-            .elems = elems,
-            .count = count,
-        }
-    };
-
-    return sea_type_canonical(fn, &tup);
-}
-
-SeaType *sea_type_const_int(SeaFunctionGraph *fn, S64 v) {
-    SeaType t = {
-        .kind = SeaLatticeKind_Int,
-        .i = {
-            .min = v,
-            .max = v,
-        },
-    };
-
-    return sea_type_canonical(fn, &t);
+SeaType *compute_int_const(SeaFunctionGraph *fn, SeaNode *n) {
+    Assert(n->kind == SeaNodeKind_ConstInt);
+    return sea_type_const_int(fn, n->vint);
 }
 
 SeaType *compute_int_urnary_op(SeaFunctionGraph *fn, SeaNode *n) {
     SeaNodeKind op = n->kind;
-    SeaType *a = n->inputs[0]->type;
+    SeaType *a = n->inputs[1]->type;
     SeaType c = { .kind = SeaLatticeKind_Int };
     SeaTypeInt out = { 0 };
     SeaTypeInt aint = a->i;
@@ -223,28 +46,44 @@ SeaType *compute_int_urnary_op(SeaFunctionGraph *fn, SeaNode *n) {
      }
 
      c.i = out;
-     return sea_type_canonical(fn, &c);
+     return sea_type_canonical(fn->m, &c);
  }
 
- SeaType *compute(SeaFunctionGraph *fn, SeaNode *n) {
-
+ SeaType *compute_proj(SeaFunctionGraph *fn, SeaNode *n) {
+     SeaNode *input = n->inputs[0];
+     Assert(input->type->kind == SeaLatticeKind_Tuple);
+     Assert(n->vint < input->type->tup.count);
+     return input->type->tup.elems[n->vint];
  }
 
- SeaType *compute_int(SeaFunctionGraph *fn, SeaNode *n) {
-     switch (n->kind) {
-         // case
-     }
 
-     return 0;
- }
 
  // TODO change all compute functions to compute_xx(fn, node) rather than type
- SeaType *compute_int_bin_op(
-     SeaFunctionGraph *fn,
-     SeaNodeKind op,
-     SeaType *a,
-     SeaType *b
- ) {
+ SeaType *compute_int_bin_op(SeaFunctionGraph *fn, SeaNode *n) {
+     SeaNodeKind op = n->kind;
+     // TODO move 0,1 to 1,2 because of scheduling
+     SeaType *a = n->inputs[1]->type;
+     SeaType *b = n->inputs[2]->type;
+
+     // todo(isaac) consider if this is okay
+     if (!a || !b) {
+         switch (op) {
+             case SeaNodeKind_EqualI:
+             case SeaNodeKind_NotEqualI:
+             case SeaNodeKind_LesserEqualI:
+             case SeaNodeKind_LesserThanI:
+             case SeaNodeKind_GreaterEqualI:
+             case SeaNodeKind_GreaterThanI:
+                return &sea_type_Bool;
+            default: return &sea_type_S64;
+         }
+     }
+
+     if (a->kind != SeaLatticeKind_Int || b->kind != SeaLatticeKind_Int) {
+         return &sea_type_Bot;
+     }
+
+
      SeaType c = { .kind = SeaLatticeKind_Int };
      SeaTypeInt out = { 0 };
      SeaTypeInt aint = a->i;
@@ -435,14 +274,33 @@ SeaType *compute_int_urnary_op(SeaFunctionGraph *fn, SeaNode *n) {
                  out.max = 1;
              }
          } break;
+
+         case SeaNodeKind_ModI: {
+            if (sea_type_is_const_int(a) && sea_type_is_const_int(b)) {
+                S64 aval = sea_type_const_int_val(a);
+                S64 bval = sea_type_const_int_val(b);
+                S64 val = aval % bval;
+                out.min = val;
+                out.max = val;
+            } else if (sea_type_is_const_int(b)) {
+                S64 bval = sea_type_const_int_val(b);
+                out.min = Min(0, aint.min % bval);
+                out.max = bval - 1;
+            } else {
+                // TODO this is probably not correct behaviour
+                out.min = type_min;
+                out.max = type_max;
+            }
+         } break;
      }
 
      c.i = out;
-     return sea_type_canonical(fn, &c);
+     return sea_type_canonical(fn->m, &c);
  }
 
 
- SeaType *sea_compute_if(SeaFunctionGraph *fn, SeaNode *ifnode) {
+
+ SeaType *compute_if(SeaFunctionGraph *fn, SeaNode *ifnode) {
 
      // test prev control
      if (ifnode->inputs[0]->type != &sea_type_CtrlLive) {
@@ -460,4 +318,102 @@ SeaType *compute_int_urnary_op(SeaFunctionGraph *fn, SeaNode *n) {
      }
 
      return &sea_type_IfBoth;
+ }
+
+ SeaType *compute_region(SeaFunctionGraph *fn, SeaNode *region) {
+     SeaType *t = &sea_type_CtrlDead;
+     for EachIndexFrom(i, 1, region->inputlen) {
+        SeaNode *input = region->inputs[i];
+        // TODO figure out if this is valid or not
+        // if (input)
+        t = sea_type_meet(fn, t, input->type);
+     }
+     return t;
+ }
+
+ SeaType *compute_loop(SeaFunctionGraph *fn, SeaNode *node) {
+     if (node->inputs[node->inputlen-1] == 0) {
+         return &sea_type_CtrlLive;
+     }
+
+     return compute_region(fn, node);
+ }
+
+ SeaType *compute_phi(SeaFunctionGraph *fn, SeaNode *n) {
+     SeaNode *region = n->inputs[0];
+     if (region->kind != SeaNodeKind_Region || region->kind != SeaNodeKind_Loop) {
+         return &sea_type_Bot;
+     }
+
+     if (region->inputs[region->inputlen - 1] == 0) return &sea_type_Bot;
+
+    SeaType *t = &sea_type_Top;
+    for EachIndexFrom(i, 1, n->inputlen) {
+        SeaNode *input = n->inputs[i];
+        // TODO it is not always safe to peephole phis
+        // move sea_peephole out of create_phi and
+        // create_region. then peephole once done.
+        // maybe add a garbage collector
+        t = sea_type_meet(fn, t, input->type);
+    }
+     return t;
+ }
+
+
+SeaType *sea_compute_type(SeaFunctionGraph *fn, SeaNode *n) {
+     switch (n->kind) {
+         case SeaNodeKind_EqualI:
+         case SeaNodeKind_NotEqualI:
+         case SeaNodeKind_GreaterThanI:
+         case SeaNodeKind_GreaterEqualI:
+         case SeaNodeKind_LesserThanI:
+         case SeaNodeKind_LesserEqualI:
+         case SeaNodeKind_ModI:
+         case SeaNodeKind_AddI:
+         case SeaNodeKind_SubI:
+         case SeaNodeKind_MulI:
+         case SeaNodeKind_DivI: {
+             return compute_int_bin_op(fn, n);
+         }
+         case SeaNodeKind_Not:
+         case SeaNodeKind_NegI: {
+             return compute_int_urnary_op(fn, n);
+         }
+
+         case SeaNodeKind_If: {
+             return compute_if(fn, n);
+         }
+
+         case SeaNodeKind_ConstInt: {
+             return compute_int_const(fn, n);
+         }
+
+         case SeaNodeKind_Proj: {
+             return compute_proj(fn, n);
+        }
+
+        case SeaNodeKind_Phi: {
+            return compute_phi(fn, n);
+        }
+
+        case SeaNodeKind_Loop: {
+            return compute_loop(fn, n);
+        }
+        case SeaNodeKind_Region: {
+            return compute_region(fn, n);
+        }
+        case SeaNodeKind_Return: {
+            return &sea_type_CtrlLive;
+        }
+        case SeaNodeKind_Dead: {
+            return &sea_type_CtrlDead;
+        }
+        case SeaNodeKind_Stop: {
+            return &sea_type_Bot;
+        }
+        default: {
+            fprintf(stderr, "Unknown Node Kind %d", (int)n->kind);
+            Trap();
+        }
+     }
  }

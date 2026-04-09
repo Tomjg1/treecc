@@ -35,5 +35,13 @@ internal void entry_point(CmdLine *cmd_line) {
     }
 
 
+    sea_codegen_module(&m.m);
+
+    for EachNode(fn_node, SeaFunctionGraphNode, m.m.functions.first) {
+        char buf[512];
+        snprintf(buf, 512, "graphs/%.*s.dot", str8_varg(fn_node->fn.proto.name));
+        sea_graphviz(buf, &fn_node->fn);
+    }
+
     frontend_deinit();
 }

@@ -148,6 +148,7 @@ Token *tokenize(Arena *arena, U32 *token_count, String8 src) {
                 case '\n':
                     append_token(arena, TokenKind_NewLine, prev, curr, &count);
                     break;
+
                 case '(':
                     append_token(arena, TokenKind_LParen, prev, curr, &count);
                     break;
@@ -160,6 +161,12 @@ Token *tokenize(Arena *arena, U32 *token_count, String8 src) {
                 case '}':
                     append_token(arena, TokenKind_RBrace, prev, curr, &count);
                     break;
+                case '[':
+                    append_token(arena, TokenKind_LBrack, prev, curr, &count);
+                    break;
+                case ']':
+                    append_token(arena, TokenKind_RBrack, prev, curr, &count);
+                    break;
                 case '+':
                     append_token(arena, TokenKind_Plus, prev, curr, &count);
                     break;
@@ -170,13 +177,25 @@ Token *tokenize(Arena *arena, U32 *token_count, String8 src) {
                     append_token(arena, TokenKind_Star, prev, curr, &count);
                     break;
                 case '/':
-                    append_token(arena, TokenKind_Slash, prev, curr, &count);
+                    if (src.str[curr] == '/') {
+                        while (curr < src.size && src.str[curr] != '\n') {
+                            curr += 1;
+                        }
+                    } else {
+                        append_token(arena, TokenKind_Slash, prev, curr, &count);
+                    }
+                    break;
+                case '%':
+                    append_token(arena, TokenKind_Percent, prev, curr, &count);
                     break;
                 case ';':
                     append_token(arena, TokenKind_SemiColon, prev, curr, &count);
                     break;
                 case ',':
                     append_token(arena, TokenKind_Comma, prev, curr, &count);
+                    break;
+                case '.':
+                    append_token(arena, TokenKind_Dot, prev, curr, &count);
                     break;
                 case '=': {
                     // TODO bound check

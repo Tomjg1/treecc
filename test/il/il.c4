@@ -1,0 +1,10 @@
+
+
+fn int main(int x, int running, int left, int right) {
+    while (running) {
+        if (left)   {x = x - 4}
+        if (right) {x = x + 4}
+    }
+
+    return x
+}
