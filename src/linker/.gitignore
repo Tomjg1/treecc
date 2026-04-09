@@ -2,3 +2,6 @@ reference_elf/*.o
 reference_elf/*.out
 libc/**
 elf.out
+test.elf
+linker
+testing/a.out
